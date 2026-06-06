@@ -306,7 +306,6 @@ def update_game_stats(game_type, wagered_amount, paid_amount, is_win, user_id=No
     conn.commit()
     conn.close()
 
-
 # --- 4. OYUNCU KOMUTLARI VE OYUNLAR ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -532,12 +531,12 @@ async def dealer_play_blackjack(update, context, game):
     dealer_value = blackjack_hand_value(game["dealer_hand"])
 
     if dealer_value > 21:
-        paid_amount = int(game["bet"] * 1.9)
-        result_text = f"🎉 Kurpiyer battı! Bahsinin **x1.9** katını aldın. (+{format_money(paid_amount - game['bet'])})"
+        paid_amount = int(game["bet"] * 2.9)
+        result_text = f"🎉 Kurpiyer battı! Bahsinin **x2.9** katını aldın. (+{format_money(paid_amount - game['bet'])})"
         await finish_blackjack_game(update, context, game, result_text, paid_amount, True)
     elif player_value > dealer_value:
-        paid_amount = int(game["bet"] * 1.9)
-        result_text = f"🎉 Kazandın! Bahsinin **x1.9** katını aldın. (+{format_money(paid_amount - game['bet'])})"
+        paid_amount = int(game["bet"] * 2.9)
+        result_text = f"🎉 Kazandın! Bahsinin **x2.9** katını aldın. (+{format_money(paid_amount - game['bet'])})"
         await finish_blackjack_game(update, context, game, result_text, paid_amount, True)
     elif player_value == dealer_value:
         paid_amount = game["bet"]
@@ -599,8 +598,8 @@ async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dealer_value == 21:
             await finish_blackjack_game(update, context, game, "🤝 İki taraf da blackjack yaptı. Bahsin iade edildi.", bet, False)
         else:
-            paid_amount = int(bet * 2.5)
-            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x2.5** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
+            paid_amount = bet * 5
+            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x5** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
         return
 
     await update.message.reply_text(
