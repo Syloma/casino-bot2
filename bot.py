@@ -78,10 +78,10 @@ MIN_BET_SLOT = parse_money("10t")
 MAX_BET_SLOT = parse_money("100t")
 MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
-MIN_BET_BLACKJACK = parse_money("10t")
-MAX_BET_BLACKJACK = parse_money("100t")
 MIN_BET_ROULETTE = parse_money("10t")
 MAX_BET_ROULETTE = parse_money("100t")
+MIN_BET_OLYMPOS = parse_money("10t")
+MAX_BET_OLYMPOS = parse_money("100t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 17, "multiplier": 5.5},
     2: {"name": "Fırtına", "chance": 16, "multiplier": 6},
@@ -104,12 +104,12 @@ ROULETTE_OUTCOMES = [
     {"key": "siyah", "label": "Siyah", "chance": 49, "icon": "⚫"},
     {"key": "yesil", "label": "Yeşil", "chance": 2, "icon": "🟢"},
 ]
+ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette']
 HORSE_FINISH_LINE = 14
 GAME_COOLDOWN_SECONDS = 1
 TELEGRAM_MESSAGE_TIMEOUT_SECONDS = 5
 MAINTENANCE_MODE = False
 last_game_times = {}
-active_blackjack_games = {}
 
 
 # --- 3. VERİTABANI AYARLARI VE İSTATİSTİK ---
@@ -149,7 +149,7 @@ def init_db():
             total_paid INTEGER DEFAULT 0
         )
     """)
-    for game in ['slot', 'dart', 'bowling', 'atyarisi', 'blackjack', 'roulette']:
+    for game in ACTIVE_GAME_TYPES:
         cursor.execute("INSERT OR IGNORE INTO game_stats (game_type) VALUES (?)", (game,))
 
     cursor.execute("""
@@ -336,7 +336,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/dart [Bahis]` -> Dart atar. 🎯\n"
         f"• `/bowling [Bahis]` -> Bowling topu fırlatır. 🎳\n"
         f"• `/atyarisi [Bahis] [At No]` -> At yarışı oynar. 🐎\n\n"
-        f"• `/blackjack [Bahis]` -> Blackjack oynar. 🃏\n\n"
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
@@ -552,210 +551,6 @@ async def play_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         message_thread_id=thread_id
     )
-
-def draw_blackjack_card():
-    return random.choice(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"])
-
-def blackjack_hand_value(hand):
-    total = 0
-    aces = 0
-    for card in hand:
-        if card == "A":
-            aces += 1
-            total += 11
-        elif card in ["J", "Q", "K"]:
-            total += 10
-        else:
-            total += int(card)
-
-    while total > 21 and aces:
-        total -= 10
-        aces -= 1
-
-    return total
-
-def format_blackjack_hand(hand, hide_second=False):
-    if hide_second and len(hand) > 1:
-        return f"{hand[0]} ?"
-    return " ".join(hand)
-
-def build_blackjack_status(game, reveal_dealer=False):
-    player_value = blackjack_hand_value(game["player_hand"])
-    dealer_hand = game["dealer_hand"]
-    dealer_text = format_blackjack_hand(dealer_hand, hide_second=not reveal_dealer)
-    dealer_value = blackjack_hand_value(dealer_hand) if reveal_dealer else "?"
-    return (
-        f"🃏 **BLACKJACK**\n\n"
-        f"Sen: `{format_blackjack_hand(game['player_hand'])}` = **{player_value}**\n"
-        f"Kurpiyer: `{dealer_text}` = **{dealer_value}**\n"
-        f"Bahis: **{format_money(game['bet'])}** Çip"
-    )
-
-async def finish_blackjack_game(update, context, game, result_text, paid_amount, is_win):
-    user_id = update.effective_user.id
-    thread_id = update.message.message_thread_id if update.message else None
-    active_blackjack_games.pop(user_id, None)
-    update_game_stats('blackjack', game["bet"], paid_amount, is_win, user_id)
-    new_balance = update_balance(user_id, paid_amount)
-    await update.message.reply_text(
-        f"{build_blackjack_status(game, reveal_dealer=True)}\n\n"
-        f"{result_text}\n\n"
-        f"💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip",
-        parse_mode="Markdown",
-        message_thread_id=thread_id
-    )
-
-async def dealer_play_blackjack(update, context, game):
-    while blackjack_hand_value(game["dealer_hand"]) < 17:
-        game["dealer_hand"].append(draw_blackjack_card())
-
-    player_value = blackjack_hand_value(game["player_hand"])
-    dealer_value = blackjack_hand_value(game["dealer_hand"])
-
-    win_multiplier = 4 if game.get("doubled") else 1.95
-
-    if dealer_value > 21:
-        paid_amount = int(game["bet"] * win_multiplier)
-        result_text = f"🎉 Kurpiyer battı! Bahsinin **x{win_multiplier:g}** katını aldın. (+{format_money(paid_amount - game['bet'])})"
-        await finish_blackjack_game(update, context, game, result_text, paid_amount, True)
-    elif player_value > dealer_value:
-        paid_amount = int(game["bet"] * win_multiplier)
-        result_text = f"🎉 Kazandın! Bahsinin **x{win_multiplier:g}** katını aldın. (+{format_money(paid_amount - game['bet'])})"
-        await finish_blackjack_game(update, context, game, result_text, paid_amount, True)
-    elif player_value == dealer_value:
-        paid_amount = game["bet"]
-        result_text = "🤝 Berabere! Bahsin iade edildi."
-        await finish_blackjack_game(update, context, game, result_text, paid_amount, False)
-    else:
-        result_text = f"😔 Kaybettin. Kurpiyer eli daha yüksek. (-{format_money(game['bet'])})"
-        await finish_blackjack_game(update, context, game, result_text, 0, False)
-
-async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    remember_user(update.effective_user)
-    if not await check_game_cooldown(update):
-        return
-    thread_id = update.message.message_thread_id if update.message else None
-
-    if user_id in active_blackjack_games:
-        await update.message.reply_text(
-            "❌ Zaten aktif bir blackjack elin var. `/hit`, `/stand` veya `/double` kullan.",
-            parse_mode="Markdown",
-            message_thread_id=thread_id
-        )
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            f"❌ **Kullanım:** `/blackjack [Miktar]`\n"
-            f"Min {format_money(MIN_BET_BLACKJACK)} | Max {format_money(MAX_BET_BLACKJACK)}",
-            parse_mode="Markdown",
-            message_thread_id=thread_id
-        )
-        return
-
-    bet = parse_money(context.args[0])
-    if bet is None or bet < MIN_BET_BLACKJACK or bet > MAX_BET_BLACKJACK:
-        await update.message.reply_text(
-            f"❌ Geçersiz bahis! Blackjack için **{format_money(MIN_BET_BLACKJACK)}** ile **{format_money(MAX_BET_BLACKJACK)}** arası oynayabilirsin.",
-            parse_mode="Markdown",
-            message_thread_id=thread_id
-        )
-        return
-
-    if get_balance(user_id) < bet:
-        await update.message.reply_text("❌ **Bakiyen yetersiz!**", parse_mode="Markdown", message_thread_id=thread_id)
-        return
-
-    update_balance(user_id, -bet)
-    game = {
-        "bet": bet,
-        "player_hand": [draw_blackjack_card(), draw_blackjack_card()],
-        "dealer_hand": [draw_blackjack_card(), draw_blackjack_card()],
-        "can_double": True,
-        "doubled": False,
-    }
-    active_blackjack_games[user_id] = game
-
-    player_value = blackjack_hand_value(game["player_hand"])
-    dealer_value = blackjack_hand_value(game["dealer_hand"])
-    if player_value == 21:
-        if dealer_value == 21:
-            await finish_blackjack_game(update, context, game, "🤝 İki taraf da blackjack yaptı. Bahsin iade edildi.", bet, False)
-        else:
-            paid_amount = bet * 2.7
-            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x2.7** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
-        return
-
-    await update.message.reply_text(
-        f"{build_blackjack_status(game)}\n\n"
-        f"Komutlar: `/hit` kart çek, `/stand` kal, `/double` bahsi ikiye katla.",
-        parse_mode="Markdown",
-        message_thread_id=thread_id
-    )
-
-async def blackjack_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    remember_user(update.effective_user)
-    thread_id = update.message.message_thread_id if update.message else None
-    game = active_blackjack_games.get(user_id)
-    if not game:
-        await update.message.reply_text("❌ Aktif blackjack elin yok. `/blackjack [Miktar]` ile başlat.", parse_mode="Markdown", message_thread_id=thread_id)
-        return
-
-    game["player_hand"].append(draw_blackjack_card())
-    game["can_double"] = False
-    player_value = blackjack_hand_value(game["player_hand"])
-    if player_value > 21:
-        await finish_blackjack_game(update, context, game, f"💥 Battın! (-{format_money(game['bet'])})", 0, False)
-    elif player_value == 21:
-        await dealer_play_blackjack(update, context, game)
-    else:
-        await update.message.reply_text(
-            f"{build_blackjack_status(game)}\n\nKomutlar: `/hit` kart çek, `/stand` kal.",
-            parse_mode="Markdown",
-            message_thread_id=thread_id
-        )
-
-async def blackjack_stand(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    remember_user(update.effective_user)
-    thread_id = update.message.message_thread_id if update.message else None
-    game = active_blackjack_games.get(user_id)
-    if not game:
-        await update.message.reply_text("❌ Aktif blackjack elin yok. `/blackjack [Miktar]` ile başlat.", parse_mode="Markdown", message_thread_id=thread_id)
-        return
-
-    game["can_double"] = False
-    await dealer_play_blackjack(update, context, game)
-
-async def blackjack_double(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    remember_user(update.effective_user)
-    thread_id = update.message.message_thread_id if update.message else None
-    game = active_blackjack_games.get(user_id)
-    if not game:
-        await update.message.reply_text("❌ Aktif blackjack elin yok. `/blackjack [Miktar]` ile başlat.", parse_mode="Markdown", message_thread_id=thread_id)
-        return
-
-    if not game["can_double"] or len(game["player_hand"]) != 2:
-        await update.message.reply_text("❌ Double sadece ilk hamlede yapılabilir.", message_thread_id=thread_id)
-        return
-
-    if get_balance(user_id) < game["bet"]:
-        await update.message.reply_text("❌ Double için bakiyen yetersiz.", message_thread_id=thread_id)
-        return
-
-    update_balance(user_id, -game["bet"])
-    game["bet"] *= 2
-    game["can_double"] = False
-    game["doubled"] = True
-    game["player_hand"].append(draw_blackjack_card())
-
-    if blackjack_hand_value(game["player_hand"]) > 21:
-        await finish_blackjack_game(update, context, game, f"💥 Double sonrası battın! (-{format_money(game['bet'])})", 0, False)
-    else:
-        await dealer_play_blackjack(update, context, game)
 
 def render_horse_race(positions):
     lines = []
@@ -1009,8 +804,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/dart [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
         f"• `/bowling [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
-        f"• `/blackjack [Miktar]` (Min {format_money(MIN_BET_BLACKJACK)} | Max {format_money(MAX_BET_BLACKJACK)})\n"
-        f"  Blackjack hamleleri: `/hit`, `/stand`, `/double`\n\n"
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
         f"  Kırmızı/Siyah: %49 x1.9 | Yeşil: %2 x35\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
@@ -1139,7 +932,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT COUNT(user_id), SUM(balance) FROM users")
     user_stats = cursor.fetchone()
     
-    cursor.execute("SELECT game_type, total_games, winning_games, total_wagered, total_paid FROM game_stats")
+    placeholders = ",".join("?" for _ in ACTIVE_GAME_TYPES)
+    cursor.execute(
+        f"SELECT game_type, total_games, winning_games, total_wagered, total_paid FROM game_stats WHERE game_type IN ({placeholders})",
+        ACTIVE_GAME_TYPES
+    )
     game_rows = cursor.fetchall()
     conn.close()
     
@@ -1167,7 +964,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_rtp = (g_paid / g_wag * 100) if g_wag > 0 else 0
         g_net = g_wag - g_paid
         
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "blackjack": "🃏", "roulette": "🎡"}.get(g_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡"}.get(g_type, "🎮")
         
         panel_text += (
             f"{icon} **{g_type.upper()} İSTATİSTİKLERİ:**\n"
@@ -1238,7 +1035,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_paid = 0
     detail_text = ""
 
-    for game_type in ["slot", "dart", "bowling", "atyarisi", "blackjack", "roulette"]:
+    for game_type in ACTIVE_GAME_TYPES:
         games, wins, wagered, paid = stat_rows.get(game_type, (0, 0, 0, 0))
         total_games += games
         total_wins += wins
@@ -1246,7 +1043,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_paid += paid
         win_rate = (wins / games * 100) if games else 0
         net = wagered - paid
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "blackjack": "🃏", "roulette": "🎡"}.get(game_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡"}.get(game_type, "🎮")
         detail_text += (
             f"{icon} **{game_type.upper()}**\n"
             f"Oyun: {games} | Kazanç: %{win_rate:.1f}\n"
@@ -1332,10 +1129,6 @@ async def main():
     application.add_handler(CommandHandler("bowling", play_bowling))
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
     application.add_handler(CommandHandler("rulet", play_roulette))
-    application.add_handler(CommandHandler("blackjack", play_blackjack))
-    application.add_handler(CommandHandler("hit", blackjack_hit))
-    application.add_handler(CommandHandler("stand", blackjack_stand))
-    application.add_handler(CommandHandler("double", blackjack_double))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("transfer", transfer_command))
