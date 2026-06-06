@@ -2,6 +2,9 @@ import sqlite3
 import asyncio
 import warnings
 import random
+import os
+import time
+from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -9,7 +12,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # --- 1. CONFIG VE YÖNETİCİ AYARLARI ---
-DB_NAME = "casino_database.db"
+BASE_DIR = Path(__file__).resolve().parent
+DB_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", str(BASE_DIR / "data"))
+DB_NAME = os.getenv("CASINO_DB_PATH", str(Path(DB_DIR) / "casino_database.db"))
 
 # 🛑 YÖNETİCİ ID'LERİ VE BOT TOKENİ
 ADMIN_IDS = [1282335065, 1553213587, 7244274042] 
@@ -50,18 +55,44 @@ MIN_BET_SLOT = parse_money("20t")
 MAX_BET_SLOT = parse_money("250t")
 MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
+HORSE_CONFIG = {
+    1: {"name": "Şimşek", "chance": 17, "multiplier": 5},
+    2: {"name": "Fırtına", "chance": 16, "multiplier": 5.5},
+    3: {"name": "Rüzgar", "chance": 14, "multiplier": 6.5},
+    4: {"name": "Kara İnci", "chance": 13, "multiplier": 7},
+    5: {"name": "Kasırga", "chance": 12, "multiplier": 7.5},
+    6: {"name": "Gölge", "chance": 10, "multiplier": 9},
+    7: {"name": "Yıldırım", "chance": 8, "multiplier": 10},
+    8: {"name": "Roket", "chance": 10, "multiplier": 9},
+}
+HORSE_FINISH_LINE = 14
+GAME_COOLDOWN_SECONDS = 1
+last_game_times = {}
 
 
 # --- 3. VERİTABANI AYARLARI VE İSTATİSTİK ---
 def init_db():
+    Path(DB_NAME).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            balance INTEGER DEFAULT 0
+            balance INTEGER DEFAULT 0,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT
         )
     """)
+    for column_name, column_type in [
+        ("username", "TEXT"),
+        ("first_name", "TEXT"),
+        ("last_name", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
+        except sqlite3.OperationalError:
+            pass
     # Oyun bazlı istatistikler tablosu
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS game_stats (
@@ -77,6 +108,74 @@ def init_db():
     
     conn.commit()
     conn.close()
+
+def escape_markdown(text):
+    return str(text).replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+
+def remember_user(user):
+    if user is None:
+        return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO users (user_id, balance, username, first_name, last_name)
+        VALUES (?, 0, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name,
+            last_name = excluded.last_name
+        """,
+        (user.id, user.username, user.first_name, user.last_name)
+    )
+    conn.commit()
+    conn.close()
+
+async def check_game_cooldown(update):
+    user_id = update.effective_user.id
+    now = time.monotonic()
+    last_time = last_game_times.get(user_id, 0)
+    remaining = GAME_COOLDOWN_SECONDS - (now - last_time)
+    if remaining > 0:
+        thread_id = update.message.message_thread_id if update.message else None
+        await update.message.reply_text(
+            f"⏳ Çok hızlı oynuyorsun! {remaining:.1f} sn sonra tekrar dene.",
+            message_thread_id=thread_id
+        )
+        return False
+
+    last_game_times[user_id] = now
+    return True
+
+def find_user_id_by_username(username):
+    username = username.lower().lstrip("@")
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE lower(username) = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def transfer_balance(sender_id, target_id, amount):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT balance FROM users WHERE user_id = ?", (sender_id,))
+        sender_row = cursor.fetchone()
+        sender_balance = sender_row[0] if sender_row else 0
+
+        if sender_balance < amount:
+            conn.rollback()
+            return None
+
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)", (target_id,))
+        cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, sender_id))
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_id))
+        conn.commit()
+        return sender_balance - amount
+    finally:
+        conn.close()
 
 def get_balance(user_id):
     conn = sqlite3.connect(DB_NAME)
@@ -122,6 +221,7 @@ def update_game_stats(game_type, wagered_amount, paid_amount, is_win):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    remember_user(update.effective_user)
     balance = get_balance(user_id)
     
     welcome_text = (
@@ -141,6 +241,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🎰 SLOT OYUNU
 async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    if not await check_game_cooldown(update):
+        return
     chat_id = update.effective_chat.id
     thread_id = update.message.message_thread_id if update.message else None
 
@@ -169,13 +272,13 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = ""
 
     if val == 64: # 777 durumu
-        win_amount = bet * 20
+        win_amount = bet * 25
         is_win = True
-        result_text = f"🎉 **7-7-7 GELDİ!** 20 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🎉 **7-7-7 GELDİ!** 25 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 9
+        win_amount = bet * 10
         is_win = True
-        result_text = f"🔥 **3'lü Kombinasyon!** 9 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🔥 **3'lü Kombinasyon!** 10 Katını kazandın! (+{format_money(win_amount)})"
     else:
         win_amount = 0
         is_win = False
@@ -191,6 +294,9 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🎯 DART OYUNU
 async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    if not await check_game_cooldown(update):
+        return
     chat_id = update.effective_chat.id
     thread_id = update.message.message_thread_id if update.message else None
 
@@ -219,9 +325,9 @@ async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 5
+        win_amount = bet * 8
         is_win = True
-        result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 5 Katını Kazandın! (+{format_money(win_amount)})**"
+        result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 8 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
         result_text = f"😔 **Karavana!** (-{format_money(bet)})\nİstediğin atışı yapamadın."
 
@@ -233,6 +339,9 @@ async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🎳 BOWLING OYUNU
 async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    if not await check_game_cooldown(update):
+        return
     chat_id = update.effective_chat.id
     thread_id = update.message.message_thread_id if update.message else None
 
@@ -261,9 +370,9 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 5.5
+        win_amount = bet * 8
         is_win = True
-        result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 5.5 Katını Kazandın! (+{format_money(win_amount)})**"
+        result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 8 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
         result_text = f"😔 **Oluk!** (-{format_money(bet)})\nTop yoldan çıktı veya az labut devrildi."
 
@@ -273,24 +382,33 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(final_message, parse_mode="Markdown", message_thread_id=thread_id)
 
 def render_horse_race(positions):
-    finish_line = 12
     lines = []
-    for horse in range(1, 6):
-        pos = min(positions[horse], finish_line)
-        track = "." * pos + "H" + "." * (finish_line - pos) + "|"
+    for horse in HORSE_CONFIG:
+        pos = min(positions[horse], HORSE_FINISH_LINE)
+        track = "." * pos + "H" + "." * (HORSE_FINISH_LINE - pos) + "|"
         lines.append(f"{horse}: {track}")
     return "\n".join(lines)
+
+def format_horse_options():
+    return "\n".join(
+        f"{horse}. At: %{config['chance']} | x{config['multiplier']:g}"
+        for horse, config in HORSE_CONFIG.items()
+    )
 
 # 🐎 AT YARIŞI OYUNU
 async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    if not await check_game_cooldown(update):
+        return
     thread_id = update.message.message_thread_id if update.message else None
 
     if len(context.args) < 2:
         await update.message.reply_text(
             f"❌ **Kullanım:** `/atyarisi [Miktar] [At No]`\n"
             f"📌 Örnek: `/atyarisi 10t 3`\n"
-            f"Min: {format_money(MIN_BET_HORSE)} | Max: {format_money(MAX_BET_HORSE)} | At: 1-5",
+            f"Min: {format_money(MIN_BET_HORSE)} | Max: {format_money(MAX_BET_HORSE)} | At: 1-8\n\n"
+            f"🎯 **Oranlar ve Çarpanlar:**\n{format_horse_options()}",
             parse_mode="Markdown",
             message_thread_id=thread_id
         )
@@ -310,8 +428,8 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if selected_horse is None or selected_horse < 1 or selected_horse > 5:
-        await update.message.reply_text("❌ Geçersiz at numarası! 1 ile 5 arasında bir at seç.", message_thread_id=thread_id)
+    if selected_horse is None or selected_horse not in HORSE_CONFIG:
+        await update.message.reply_text("❌ Geçersiz at numarası! 1 ile 8 arasında bir at seç.", message_thread_id=thread_id)
         return
 
     current_balance = get_balance(user_id)
@@ -321,13 +439,7 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     update_balance(user_id, -bet)
 
-    horse_names = {
-        1: "Şimşek",
-        2: "Fırtına",
-        3: "Rüzgar",
-        4: "Kara İnci",
-        5: "Kasırga",
-    }
+    horse_names = {horse: config["name"] for horse, config in HORSE_CONFIG.items()}
     positions = {horse: 0 for horse in horse_names}
     race_msg = await update.message.reply_text(
         f"🐎 **At yarışı başladı!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
@@ -336,25 +448,18 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_thread_id=thread_id
     )
 
-    winner = None
-    finish_line = 12
-    for _ in range(8):
-        await asyncio.sleep(0.8)
-        horses = list(horse_names.keys())
-        random.shuffle(horses)
-        for horse in horses:
-            positions[horse] += random.randint(0, 3)
+    horses = list(HORSE_CONFIG.keys())
+    weights = [HORSE_CONFIG[horse]["chance"] for horse in horses]
+    winner = random.choices(horses, weights=weights, k=1)[0]
 
-        leaders = [horse for horse, pos in positions.items() if pos >= finish_line]
-        if leaders:
-            winner = max(leaders, key=lambda horse: positions[horse])
-            positions[winner] = finish_line
-            await race_msg.edit_text(
-                f"🐎 **Final virajı!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-                f"```\n{render_horse_race(positions)}\n```",
-                parse_mode="Markdown"
-            )
-            break
+    for frame in range(1, 6):
+        await asyncio.sleep(0.55)
+        for horse in horses:
+            if horse == winner:
+                positions[horse] = min(HORSE_FINISH_LINE - 1, frame * 3)
+            else:
+                max_pos = max(1, frame * 3 - random.randint(1, 4))
+                positions[horse] = min(HORSE_FINISH_LINE - 2, max(positions[horse], max_pos))
 
         await race_msg.edit_text(
             f"🐎 **Atlar koşuyor!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
@@ -362,22 +467,21 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    if winner is None:
-        winner = max(positions, key=positions.get)
-        positions[winner] = finish_line
-        await race_msg.edit_text(
-            f"🐎 **Foto finish!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-            f"```\n{render_horse_race(positions)}\n```",
-            parse_mode="Markdown"
-        )
+    positions[winner] = HORSE_FINISH_LINE
+    await race_msg.edit_text(
+        f"🐎 **Foto finish!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
+        f"```\n{render_horse_race(positions)}\n```",
+        parse_mode="Markdown"
+    )
 
     is_win = winner == selected_horse
-    win_amount = bet * 4 if is_win else 0
+    multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
+    win_amount = int(bet * multiplier) if is_win else 0
     update_game_stats('atyarisi', bet, win_amount, is_win)
     new_balance = update_balance(user_id, win_amount)
 
     if is_win:
-        result_text = f"🎉 **TEBRİKLER!** #{winner} {horse_names[winner]} kazandı. Bahsinin **4 katını** aldın! (+{format_money(win_amount)})"
+        result_text = f"🎉 **TEBRİKLER!** #{winner} {horse_names[winner]} kazandı. Bahsinin **x{multiplier:g}** katını aldın! (+{format_money(win_amount)})"
     else:
         result_text = f"😔 **Kaybettin.** Kazanan at: #{winner} {horse_names[winner]} (-{format_money(bet)})"
 
@@ -388,10 +492,11 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
     thread_id = update.message.message_thread_id if update.message else None
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
+    cursor.execute("SELECT user_id, username, first_name, last_name, balance FROM users ORDER BY balance DESC LIMIT 10")
     rows = cursor.fetchall()
     conn.close()
     
@@ -399,18 +504,75 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     
     for index, row in enumerate(rows):
-        target_id = row[0]
-        balance = row[1]
-        leaderboard += f"{medals[index]} ID: `{target_id}` — 💰 **{format_money(balance)} Çip**\n"
+        target_id, username, first_name, last_name, balance = row
+        if username:
+            display_name = f"@{username}"
+        else:
+            full_name = " ".join(part for part in [first_name, last_name] if part)
+            display_name = full_name or f"ID: {target_id}"
+
+        leaderboard += f"{medals[index]} {escape_markdown(display_name)} — 💰 **{format_money(balance)} Çip**\n"
         
     await update.message.reply_text(leaderboard, parse_mode="Markdown", message_thread_id=thread_id)
 
 async def bakiye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
     balance = get_balance(update.effective_user.id)
     await update.message.reply_text(f"💰 Bakiyen: {format_money(balance)} Çip")
 
+async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sender_id = update.effective_user.id
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+
+    target_id = None
+    amount_arg = None
+
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        remember_user(target_user)
+        target_id = target_user.id
+        amount_arg = context.args[0] if context.args else None
+    elif len(context.args) >= 2:
+        target_arg = context.args[0]
+        amount_arg = context.args[1]
+        if target_arg.startswith("@"):
+            target_id = find_user_id_by_username(target_arg)
+        else:
+            try:
+                target_id = int(target_arg)
+            except ValueError:
+                target_id = None
+
+    amount = parse_money(amount_arg) if amount_arg else None
+    if target_id is None or amount is None or amount <= 0:
+        await update.message.reply_text(
+            "❌ Kullanım: `/transfer [ID/@kullanıcı] [Miktar]`\n"
+            "Ya da bir kullanıcı mesajına yanıt ver: `/transfer 10t`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if target_id == sender_id:
+        await update.message.reply_text("❌ Kendine transfer yapamazsın.", message_thread_id=thread_id)
+        return
+
+    new_balance = transfer_balance(sender_id, target_id, amount)
+    if new_balance is None:
+        await update.message.reply_text("❌ Bakiyen yetersiz!", message_thread_id=thread_id)
+        return
+
+    await update.message.reply_text(
+        f"✅ `{target_id}` ID'li kullanıcıya **{format_money(amount)}** çip transfer edildi.\n"
+        f"💳 Kalan bakiyen: **{format_money(new_balance)}** Çip",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    remember_user(update.effective_user)
     thread_id = update.message.message_thread_id if update.message else None
     
     help_text = (
@@ -419,11 +581,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/slot [Miktar]` (Min {format_money(MIN_BET_SLOT)} | Max {format_money(MAX_BET_SLOT)})\n"
         f"• `/dart [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
         f"• `/bowling [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
-        f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-5)\n\n"
+        f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
+        f"🎯 **At Yarışı Oranları:**\n{format_horse_options()}\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
         f"• `/top10` - En zengin 10 oyuncuyu listeler\n"
+        f"• `/transfer [ID/@kullanıcı] [Miktar]` - Başka kullanıcıya çip gönderir\n"
     )
     
     if user_id in ADMIN_IDS:
@@ -593,6 +757,7 @@ async def main():
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
+    application.add_handler(CommandHandler("transfer", transfer_command))
     application.add_handler(CommandHandler("komut", help_command))
     
     # Admin Komutları
