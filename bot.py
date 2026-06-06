@@ -339,7 +339,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Bahis]` -> Bowling topu fırlatır. 🎳\n"
         f"• `/atyarisi [Bahis] [At No]` -> At yarışı oynar. 🐎\n\n"
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
-        f"• `/olympos` -> Bahissiz Olympos çevirir. 🏛️\n\n"
+        f"• `/olympos1` -> Bahissiz Olympos bilgisi verir. 🏛️\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -871,7 +871,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
         f"  Kırmızı/Siyah: %49 x1.9 | Yeşil: %2 x35\n\n"
-        f"• `/olympos` - Bahissiz çarpanlı Olympos eğlence modu\n\n"
+        f"• `/olympos1` - Bahissiz çarpanlı Olympos bilgi/eğlence modu\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
@@ -1201,7 +1201,7 @@ async def main():
     application.add_handler(CommandHandler("bowling", play_bowling))
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
     application.add_handler(CommandHandler("rulet", play_roulette))
-    application.add_handler(CommandHandler("olympos", play_olympos_free))
+    application.add_handler(CommandHandler("olympos1", play_olympos_free))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("transfer", transfer_command))
