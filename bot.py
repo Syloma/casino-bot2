@@ -169,11 +169,11 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = ""
 
     if val == 64: # 777 durumu
-        win_amount = bet * 25
+        win_amount = bet * 20
         is_win = True
         result_text = f"🎉 **7-7-7 GELDİ!** 25 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 10
+        win_amount = bet * 9
         is_win = True
         result_text = f"🔥 **3'lü Kombinasyon!** 10 Katını kazandın! (+{format_money(win_amount)})"
     else:
@@ -219,7 +219,7 @@ async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 8
+        win_amount = bet * 5
         is_win = True
         result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 8 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
@@ -261,7 +261,7 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 8
+        win_amount = bet * 5.5
         is_win = True
         result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 8 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
