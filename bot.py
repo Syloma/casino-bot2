@@ -56,7 +56,7 @@ MAX_BET_SLOT = parse_money("250t")
 MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
 HORSE_CONFIG = {
-    1: {"name": "Şimşek", "chance": 17, "multiplier": 5},
+    1: {"name": "Süleyman", "chance": 17, "multiplier": 5},
     2: {"name": "Fırtına", "chance": 16, "multiplier": 5.5},
     3: {"name": "Rüzgar", "chance": 14, "multiplier": 6.5},
     4: {"name": "Kara İnci", "chance": 13, "multiplier": 7},
