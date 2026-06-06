@@ -80,6 +80,8 @@ MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
 MIN_BET_BLACKJACK = parse_money("10t")
 MAX_BET_BLACKJACK = parse_money("100t")
+MIN_BET_ROULETTE = parse_money("10t")
+MAX_BET_ROULETTE = parse_money("100t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 17, "multiplier": 5.5},
     2: {"name": "Fırtına", "chance": 16, "multiplier": 6},
@@ -90,6 +92,18 @@ HORSE_CONFIG = {
     7: {"name": "Morning", "chance": 8, "multiplier": 20},
     8: {"name": "Roket", "chance": 10, "multiplier": 10},
 }
+ROULETTE_CONFIG = {
+    "kirmizi": {"label": "Kırmızı", "chance": 49, "multiplier": 1.9, "icon": "🔴"},
+    "kırmızı": {"label": "Kırmızı", "chance": 49, "multiplier": 1.9, "icon": "🔴"},
+    "siyah": {"label": "Siyah", "chance": 49, "multiplier": 1.9, "icon": "⚫"},
+    "yesil": {"label": "Yeşil", "chance": 2, "multiplier": 35, "icon": "🟢"},
+    "yeşil": {"label": "Yeşil", "chance": 2, "multiplier": 35, "icon": "🟢"},
+}
+ROULETTE_OUTCOMES = [
+    {"key": "kirmizi", "label": "Kırmızı", "chance": 49, "icon": "🔴"},
+    {"key": "siyah", "label": "Siyah", "chance": 49, "icon": "⚫"},
+    {"key": "yesil", "label": "Yeşil", "chance": 2, "icon": "🟢"},
+]
 HORSE_FINISH_LINE = 14
 GAME_COOLDOWN_SECONDS = 1
 TELEGRAM_MESSAGE_TIMEOUT_SECONDS = 5
@@ -135,7 +149,7 @@ def init_db():
             total_paid INTEGER DEFAULT 0
         )
     """)
-    for game in ['slot', 'dart', 'bowling', 'atyarisi', 'blackjack']:
+    for game in ['slot', 'dart', 'bowling', 'atyarisi', 'blackjack', 'roulette']:
         cursor.execute("INSERT OR IGNORE INTO game_stats (game_type) VALUES (?)", (game,))
 
     cursor.execute("""
@@ -323,6 +337,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Bahis]` -> Bowling topu fırlatır. 🎳\n"
         f"• `/atyarisi [Bahis] [At No]` -> At yarışı oynar. 🐎\n\n"
         f"• `/blackjack [Bahis]` -> Blackjack oynar. 🃏\n\n"
+        f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -362,13 +377,13 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = ""
 
     if val == 64: # 777 durumu
-        win_amount = bet * 25
+        win_amount = bet * 22
         is_win = True
-        result_text = f"🎉 **7-7-7 GELDİ!** 25 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🎉 **7-7-7 GELDİ!** 22 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 7
+        win_amount = bet * 7.5
         is_win = True
-        result_text = f"🔥 **3'lü Kombinasyon!** 7 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🔥 **3'lü Kombinasyon!** 7.5 Katını kazandın! (+{format_money(win_amount)})"
     else:
         win_amount = 0
         is_win = False
@@ -471,6 +486,73 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_message = f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip"
     await update.message.reply_text(final_message, parse_mode="Markdown", message_thread_id=thread_id)
 
+async def play_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    if not await check_game_cooldown(update):
+        return
+    thread_id = update.message.message_thread_id if update.message else None
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            f"❌ **Kullanım:** `/rulet [Miktar] [Renk]`\n"
+            f"Renkler: `kirmizi`, `siyah`, `yesil`\n"
+            f"Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)}",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    bet = parse_money(context.args[0])
+    selected_color = context.args[1].lower().strip()
+    selected_config = ROULETTE_CONFIG.get(selected_color)
+
+    if bet is None or bet < MIN_BET_ROULETTE or bet > MAX_BET_ROULETTE:
+        await update.message.reply_text(
+            f"❌ Geçersiz bahis! Rulet için **{format_money(MIN_BET_ROULETTE)}** ile **{format_money(MAX_BET_ROULETTE)}** arası oynayabilirsin.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if selected_config is None:
+        await update.message.reply_text("❌ Geçersiz renk! `kirmizi`, `siyah` veya `yesil` seç.", parse_mode="Markdown", message_thread_id=thread_id)
+        return
+
+    if get_balance(user_id) < bet:
+        await update.message.reply_text("❌ **Bakiyen yetersiz!**", parse_mode="Markdown", message_thread_id=thread_id)
+        return
+
+    update_balance(user_id, -bet)
+
+    outcome = random.choices(
+        ROULETTE_OUTCOMES,
+        weights=[item["chance"] for item in ROULETTE_OUTCOMES],
+        k=1
+    )[0]
+
+    is_win = outcome["label"] == selected_config["label"]
+    win_amount = int(bet * selected_config["multiplier"]) if is_win else 0
+    update_game_stats('roulette', bet, win_amount, is_win, user_id)
+    new_balance = update_balance(user_id, win_amount)
+
+    if is_win:
+        result_text = (
+            f"🎡 Rulet sonucu: {outcome['icon']} **{outcome['label']}**\n"
+            f"🎉 Kazandın! Bahsinin **x{selected_config['multiplier']:g}** katını aldın. (+{format_money(win_amount)})"
+        )
+    else:
+        result_text = (
+            f"🎡 Rulet sonucu: {outcome['icon']} **{outcome['label']}**\n"
+            f"😔 Kaybettin. Seçimin: {selected_config['icon']} **{selected_config['label']}** (-{format_money(bet)})"
+        )
+
+    await update.message.reply_text(
+        f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
 def draw_blackjack_card():
     return random.choice(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"])
 
@@ -530,13 +612,15 @@ async def dealer_play_blackjack(update, context, game):
     player_value = blackjack_hand_value(game["player_hand"])
     dealer_value = blackjack_hand_value(game["dealer_hand"])
 
+    win_multiplier = 4.5 if game.get("doubled") else 2.5
+
     if dealer_value > 21:
-        paid_amount = int(game["bet"] * 2.9)
-        result_text = f"🎉 Kurpiyer battı! Bahsinin **x2.9** katını aldın. (+{format_money(paid_amount - game['bet'])})"
+        paid_amount = int(game["bet"] * win_multiplier)
+        result_text = f"🎉 Kurpiyer battı! Bahsinin **x{win_multiplier:g}** katını aldın. (+{format_money(paid_amount - game['bet'])})"
         await finish_blackjack_game(update, context, game, result_text, paid_amount, True)
     elif player_value > dealer_value:
-        paid_amount = int(game["bet"] * 2.9)
-        result_text = f"🎉 Kazandın! Bahsinin **x2.9** katını aldın. (+{format_money(paid_amount - game['bet'])})"
+        paid_amount = int(game["bet"] * win_multiplier)
+        result_text = f"🎉 Kazandın! Bahsinin **x{win_multiplier:g}** katını aldın. (+{format_money(paid_amount - game['bet'])})"
         await finish_blackjack_game(update, context, game, result_text, paid_amount, True)
     elif player_value == dealer_value:
         paid_amount = game["bet"]
@@ -589,6 +673,7 @@ async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "player_hand": [draw_blackjack_card(), draw_blackjack_card()],
         "dealer_hand": [draw_blackjack_card(), draw_blackjack_card()],
         "can_double": True,
+        "doubled": False,
     }
     active_blackjack_games[user_id] = game
 
@@ -598,8 +683,8 @@ async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dealer_value == 21:
             await finish_blackjack_game(update, context, game, "🤝 İki taraf da blackjack yaptı. Bahsin iade edildi.", bet, False)
         else:
-            paid_amount = bet * 5
-            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x5** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
+            paid_amount = bet * 3
+            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x3** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
         return
 
     await update.message.reply_text(
@@ -664,6 +749,7 @@ async def blackjack_double(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_balance(user_id, -game["bet"])
     game["bet"] *= 2
     game["can_double"] = False
+    game["doubled"] = True
     game["player_hand"].append(draw_blackjack_card())
 
     if blackjack_hand_value(game["player_hand"]) > 21:
@@ -770,56 +856,31 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bet_charged = True
 
         horse_names = {horse: config["name"] for horse, config in HORSE_CONFIG.items()}
-        positions = {horse: 0 for horse in horse_names}
-        race_msg = await safe_reply_text(
+        await safe_reply_text(
             update,
-            f"🐎 **At yarışı başladı!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-            f"```\n{render_horse_race(positions)}\n```",
+            f"🐎 **At yarışı başladı!**\n"
+            f"Senin atın: **#{selected_horse} {horse_names[selected_horse]}**\n"
+            f"Sonuç hazırlanıyor...",
             parse_mode="Markdown",
             message_thread_id=thread_id
         )
 
+        await asyncio.sleep(1.2)
         horses = list(HORSE_CONFIG.keys())
         weights = [HORSE_CONFIG[horse]["chance"] for horse in horses]
         winner = random.choices(horses, weights=weights, k=1)[0]
 
-        for frame in range(1, 5):
-            await asyncio.sleep(0.45)
-            for horse in horses:
-                if horse == winner:
-                    positions[horse] = min(HORSE_FINISH_LINE - 1, frame * 4)
-                else:
-                    max_pos = max(1, frame * 4 - random.randint(1, 5))
-                    positions[horse] = min(HORSE_FINISH_LINE - 2, max(positions[horse], max_pos))
-
-            if race_msg:
-                await safe_edit_race_message(
-                    race_msg,
-                    f"🐎 **Atlar koşuyor!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-                    f"```\n{render_horse_race(positions)}\n```"
-                )
-
-        positions[winner] = HORSE_FINISH_LINE
-        if race_msg:
-            await safe_edit_race_message(
-                race_msg,
-                f"🐎 **Foto finish!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-                f"```\n{render_horse_race(positions)}\n```"
-            )
-
         is_win = winner == selected_horse
         multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
         win_amount = int(bet * multiplier) if is_win else 0
-        update_game_stats('atyarisi', bet, win_amount, is_win, user_id)
-        new_balance = update_balance(user_id, win_amount)
-        bet_charged = False
 
         if is_win:
             result_text = f"🎉 **TEBRİKLER!** #{winner} {horse_names[winner]} kazandı. Bahsinin **x{multiplier:g}** katını aldın! (+{format_money(win_amount)})"
         else:
             result_text = f"😔 **Kaybettin.** Kazanan at: #{winner} {horse_names[winner]} (-{format_money(bet)})"
 
-        final_message = f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip"
+        projected_balance = get_balance(user_id) + win_amount
+        final_message = f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(projected_balance)} Çip"
         sent_msg = await safe_reply_text(
             update,
             final_message,
@@ -827,13 +888,27 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_thread_id=thread_id
         )
         if sent_msg is None:
-            await safe_send_message(
+            sent_msg = await safe_send_message(
                 context,
                 update.effective_chat.id,
                 final_message,
                 parse_mode="Markdown",
                 message_thread_id=thread_id
             )
+        if sent_msg is None:
+            new_balance = update_balance(user_id, bet)
+            bet_charged = False
+            await safe_send_message(
+                context,
+                update.effective_chat.id,
+                f"⚠️ At yarışı sonucu gönderilemediği için bahis iade edildi.\n💳 Güncel Bakiyen: {format_money(new_balance)} Çip",
+                message_thread_id=thread_id
+            )
+            return
+
+        update_game_stats('atyarisi', bet, win_amount, is_win, user_id)
+        update_balance(user_id, win_amount)
+        bet_charged = False
     except Exception:
         if bet_charged:
             new_balance = update_balance(user_id, bet)
@@ -936,6 +1011,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
         f"• `/blackjack [Miktar]` (Min {format_money(MIN_BET_BLACKJACK)} | Max {format_money(MAX_BET_BLACKJACK)})\n"
         f"  Blackjack hamleleri: `/hit`, `/stand`, `/double`\n\n"
+        f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
+        f"  Kırmızı/Siyah: %49 x1.9 | Yeşil: %2 x35\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
@@ -1090,7 +1167,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_rtp = (g_paid / g_wag * 100) if g_wag > 0 else 0
         g_net = g_wag - g_paid
         
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "blackjack": "🃏"}.get(g_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "blackjack": "🃏", "roulette": "🎡"}.get(g_type, "🎮")
         
         panel_text += (
             f"{icon} **{g_type.upper()} İSTATİSTİKLERİ:**\n"
@@ -1161,7 +1238,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_paid = 0
     detail_text = ""
 
-    for game_type in ["slot", "dart", "bowling", "atyarisi", "blackjack"]:
+    for game_type in ["slot", "dart", "bowling", "atyarisi", "blackjack", "roulette"]:
         games, wins, wagered, paid = stat_rows.get(game_type, (0, 0, 0, 0))
         total_games += games
         total_wins += wins
@@ -1169,7 +1246,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_paid += paid
         win_rate = (wins / games * 100) if games else 0
         net = wagered - paid
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "blackjack": "🃏"}.get(game_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "blackjack": "🃏", "roulette": "🎡"}.get(game_type, "🎮")
         detail_text += (
             f"{icon} **{game_type.upper()}**\n"
             f"Oyun: {games} | Kazanç: %{win_rate:.1f}\n"
@@ -1254,6 +1331,7 @@ async def main():
     application.add_handler(CommandHandler("dart", play_dart))
     application.add_handler(CommandHandler("bowling", play_bowling))
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
+    application.add_handler(CommandHandler("rulet", play_roulette))
     application.add_handler(CommandHandler("blackjack", play_blackjack))
     application.add_handler(CommandHandler("hit", blackjack_hit))
     application.add_handler(CommandHandler("stand", blackjack_stand))
