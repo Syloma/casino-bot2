@@ -13,8 +13,31 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # --- 1. CONFIG VE YÖNETİCİ AYARLARI ---
 BASE_DIR = Path(__file__).resolve().parent
-DB_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", str(BASE_DIR / "data"))
-DB_NAME = os.getenv("CASINO_DB_PATH", str(Path(DB_DIR) / "casino_database.db"))
+
+def resolve_db_path():
+    custom_db_path = os.getenv("CASINO_DB_PATH")
+    if custom_db_path:
+        return Path(custom_db_path)
+
+    railway_volume_path = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    if railway_volume_path:
+        return Path(railway_volume_path) / "casino_database.db"
+
+    is_railway = any(os.getenv(key) for key in [
+        "RAILWAY_ENVIRONMENT",
+        "RAILWAY_ENVIRONMENT_NAME",
+        "RAILWAY_PROJECT_ID",
+        "RAILWAY_SERVICE_ID",
+    ])
+    if is_railway:
+        raise RuntimeError(
+            "Railway'de kalıcı veritabanı yolu bulunamadı. "
+            "Servise Volume bağla veya CASINO_DB_PATH=/data/casino_database.db ayarla."
+        )
+
+    return BASE_DIR / "data" / "casino_database.db"
+
+DB_NAME = str(resolve_db_path())
 
 # 🛑 YÖNETİCİ ID'LERİ VE BOT TOKENİ
 ADMIN_IDS = [1282335065, 1553213587, 7244274042] 
@@ -56,14 +79,14 @@ MAX_BET_SLOT = parse_money("250t")
 MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
 HORSE_CONFIG = {
-    1: {"name": "Süleyman", "chance": 17, "multiplier": 5},
-    2: {"name": "Fırtına", "chance": 16, "multiplier": 5.5},
+    1: {"name": "Süleyman", "chance": 17, "multiplier": 5.5},
+    2: {"name": "Fırtına", "chance": 16, "multiplier": 6},
     3: {"name": "Rüzgar", "chance": 14, "multiplier": 6.5},
-    4: {"name": "Kara İnci", "chance": 13, "multiplier": 7},
-    5: {"name": "Kasırga", "chance": 12, "multiplier": 7.5},
-    6: {"name": "Gölge", "chance": 10, "multiplier": 9},
-    7: {"name": "Yıldırım", "chance": 8, "multiplier": 10},
-    8: {"name": "Roket", "chance": 10, "multiplier": 9},
+    4: {"name": "Kara İnci", "chance": 13, "multiplier": 7.5},
+    5: {"name": "Kasırga", "chance": 12, "multiplier": 8},
+    6: {"name": "Gölge", "chance": 10, "multiplier": 10},
+    7: {"name": "Yıldırım", "chance": 8, "multiplier": 15},
+    8: {"name": "Roket", "chance": 10, "multiplier": 10},
 }
 HORSE_FINISH_LINE = 14
 GAME_COOLDOWN_SECONDS = 1
@@ -81,13 +104,17 @@ def init_db():
             balance INTEGER DEFAULT 0,
             username TEXT,
             first_name TEXT,
-            last_name TEXT
+            last_name TEXT,
+            total_added INTEGER DEFAULT 0,
+            total_removed INTEGER DEFAULT 0
         )
     """)
     for column_name, column_type in [
         ("username", "TEXT"),
         ("first_name", "TEXT"),
         ("last_name", "TEXT"),
+        ("total_added", "INTEGER DEFAULT 0"),
+        ("total_removed", "INTEGER DEFAULT 0"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
@@ -105,12 +132,34 @@ def init_db():
     """)
     for game in ['slot', 'dart', 'bowling', 'atyarisi']:
         cursor.execute("INSERT OR IGNORE INTO game_stats (game_type) VALUES (?)", (game,))
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_game_stats (
+            user_id INTEGER NOT NULL,
+            game_type TEXT NOT NULL,
+            total_games INTEGER DEFAULT 0,
+            winning_games INTEGER DEFAULT 0,
+            total_wagered INTEGER DEFAULT 0,
+            total_paid INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, game_type)
+        )
+    """)
     
     conn.commit()
     conn.close()
 
 def escape_markdown(text):
-    return str(text).replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("_", "\\_")
+        .replace("*", "\\*")
+        .replace("`", "\\`")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
 
 def remember_user(user):
     if user is None:
@@ -201,7 +250,18 @@ def update_balance(user_id, amount):
     conn.close()
     return new_balance
 
-def update_game_stats(game_type, wagered_amount, paid_amount, is_win):
+def update_admin_balance_totals(user_id, added=0, removed=0):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)", (user_id,))
+    cursor.execute(
+        "UPDATE users SET total_added = total_added + ?, total_removed = total_removed + ? WHERE user_id = ?",
+        (added, removed, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+def update_game_stats(game_type, wagered_amount, paid_amount, is_win, user_id=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     win_int = 1 if is_win else 0
@@ -213,6 +273,20 @@ def update_game_stats(game_type, wagered_amount, paid_amount, is_win):
             total_paid = total_paid + ?
         WHERE game_type = ?
     """, (win_int, wagered_amount, paid_amount, game_type))
+
+    if user_id is not None:
+        cursor.execute(
+            "INSERT OR IGNORE INTO user_game_stats (user_id, game_type) VALUES (?, ?)",
+            (user_id, game_type)
+        )
+        cursor.execute("""
+            UPDATE user_game_stats
+            SET total_games = total_games + 1,
+                winning_games = winning_games + ?,
+                total_wagered = total_wagered + ?,
+                total_paid = total_paid + ?
+            WHERE user_id = ? AND game_type = ?
+        """, (win_int, wagered_amount, paid_amount, user_id, game_type))
     conn.commit()
     conn.close()
 
@@ -285,7 +359,7 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text = "😔 **Maalesef kazanamadın.**"
 
     # İstatistikleri güncelle (Önce stat, sonra bakiye)
-    update_game_stats('slot', bet, win_amount, is_win)
+    update_game_stats('slot', bet, win_amount, is_win, user_id)
     
     # Yeni bakiyeyi güncelle (Eğer win_amount 0 ise bakiye değişmez)
     new_bal = update_balance(user_id, win_amount)
@@ -331,7 +405,7 @@ async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         result_text = f"😔 **Karavana!** (-{format_money(bet)})\nİstediğin atışı yapamadın."
 
-    update_game_stats('dart', bet, win_amount, is_win)
+    update_game_stats('dart', bet, win_amount, is_win, user_id)
     new_balance = update_balance(user_id, win_amount)
     final_message = f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip"
     await update.message.reply_text(final_message, parse_mode="Markdown", message_thread_id=thread_id)
@@ -376,7 +450,7 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         result_text = f"😔 **Oluk!** (-{format_money(bet)})\nTop yoldan çıktı veya az labut devrildi."
 
-    update_game_stats('bowling', bet, win_amount, is_win)
+    update_game_stats('bowling', bet, win_amount, is_win, user_id)
     new_balance = update_balance(user_id, win_amount)
     final_message = f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip"
     await update.message.reply_text(final_message, parse_mode="Markdown", message_thread_id=thread_id)
@@ -394,6 +468,16 @@ def format_horse_options():
         f"{horse}. At: %{config['chance']} | x{config['multiplier']:g}"
         for horse, config in HORSE_CONFIG.items()
     )
+
+async def safe_edit_race_message(message, text):
+    try:
+        await asyncio.wait_for(
+            message.edit_text(text, parse_mode="Markdown"),
+            timeout=3
+        )
+        return True
+    except Exception:
+        return False
 
 # 🐎 AT YARIŞI OYUNU
 async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,32 +536,32 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
     weights = [HORSE_CONFIG[horse]["chance"] for horse in horses]
     winner = random.choices(horses, weights=weights, k=1)[0]
 
-    for frame in range(1, 6):
-        await asyncio.sleep(0.55)
+    for frame in range(1, 5):
+        await asyncio.sleep(0.45)
         for horse in horses:
             if horse == winner:
-                positions[horse] = min(HORSE_FINISH_LINE - 1, frame * 3)
+                positions[horse] = min(HORSE_FINISH_LINE - 1, frame * 4)
             else:
-                max_pos = max(1, frame * 3 - random.randint(1, 4))
+                max_pos = max(1, frame * 4 - random.randint(1, 5))
                 positions[horse] = min(HORSE_FINISH_LINE - 2, max(positions[horse], max_pos))
 
-        await race_msg.edit_text(
+        await safe_edit_race_message(
+            race_msg,
             f"🐎 **Atlar koşuyor!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-            f"```\n{render_horse_race(positions)}\n```",
-            parse_mode="Markdown"
+            f"```\n{render_horse_race(positions)}\n```"
         )
 
     positions[winner] = HORSE_FINISH_LINE
-    await race_msg.edit_text(
+    await safe_edit_race_message(
+        race_msg,
         f"🐎 **Foto finish!**\nSenin atın: **#{selected_horse} {horse_names[selected_horse]}**\n\n"
-        f"```\n{render_horse_race(positions)}\n```",
-        parse_mode="Markdown"
+        f"```\n{render_horse_race(positions)}\n```"
     )
 
     is_win = winner == selected_horse
     multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
     win_amount = int(bet * multiplier) if is_win else 0
-    update_game_stats('atyarisi', bet, win_amount, is_win)
+    update_game_stats('atyarisi', bet, win_amount, is_win, user_id)
     new_balance = update_balance(user_id, win_amount)
 
     if is_win:
@@ -595,6 +679,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• `/bakiyeekle [ID/Yanıt] [Miktar]`\n"
             f"• `/bakiyesil [ID/Yanıt] [Miktar]`\n"
             f"• `/panel` - Kasa istatistiklerini ve oyun bazlı verileri gösterir\n"
+            f"• `/bilgi [ID/@kullanıcı]` - Kullanıcı bazlı oyun ve bakiye istatistiklerini gösterir\n"
             f"• `/panelsifirla` - Kasa istatistiklerini temizler\n"
             f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
         )
@@ -619,6 +704,29 @@ def get_target_and_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             return None, None
 
+def get_info_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.reply_to_message:
+        remember_user(update.message.reply_to_message.from_user)
+        return update.message.reply_to_message.from_user.id
+
+    if not context.args:
+        return None
+
+    target_arg = context.args[0]
+    if target_arg.startswith("@"):
+        return find_user_id_by_username(target_arg)
+
+    try:
+        return int(target_arg)
+    except ValueError:
+        return None
+
+def get_user_display_name(user_id, username, first_name, last_name):
+    if username:
+        return f"@{username}"
+    full_name = " ".join(part for part in [first_name, last_name] if part)
+    return full_name or f"ID: {user_id}"
+
 async def add_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     thread_id = update.message.message_thread_id if update.message else None
@@ -628,6 +736,7 @@ async def add_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     update_balance(target_id, amount)
+    update_admin_balance_totals(target_id, added=amount)
     await update.message.reply_text(f"✅ `{target_id}` ID'li kullanıcıya **{format_money(amount)}** çip eklendi.", parse_mode="Markdown", message_thread_id=thread_id)
 
 async def remove_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -639,6 +748,7 @@ async def remove_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     update_balance(target_id, -amount)
+    update_admin_balance_totals(target_id, removed=amount)
     await update.message.reply_text(f"📉 `{target_id}` ID'li kullanıcıdan **{format_money(amount)}** çip silindi.", parse_mode="Markdown", message_thread_id=thread_id)
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -702,6 +812,90 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(panel_text, parse_mode="Markdown", message_thread_id=thread_id)
 
+async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: return
+    thread_id = update.message.message_thread_id if update.message else None
+    target_id = get_info_target(update, context)
+
+    if target_id is None:
+        await update.message.reply_text(
+            "❌ Kullanım: `/bilgi [ID/@kullanıcı]`\n"
+            "Ya da kullanıcının mesajına yanıt verip `/bilgi` yaz.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT user_id, balance, username, first_name, last_name, total_added, total_removed FROM users WHERE user_id = ?",
+        (target_id,)
+    )
+    user_row = cursor.fetchone()
+
+    if user_row is None:
+        conn.close()
+        await update.message.reply_text("❌ Kullanıcı veritabanında bulunamadı.", message_thread_id=thread_id)
+        return
+
+    cursor.execute("""
+        SELECT game_type, total_games, winning_games, total_wagered, total_paid
+        FROM user_game_stats
+        WHERE user_id = ?
+    """, (target_id,))
+    stat_rows = {row[0]: row[1:] for row in cursor.fetchall()}
+    conn.close()
+
+    user_id, balance, username, first_name, last_name, total_added, total_removed = user_row
+    display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
+    total_added = total_added or 0
+    total_removed = total_removed or 0
+
+    total_games = 0
+    total_wins = 0
+    total_wagered = 0
+    total_paid = 0
+    detail_text = ""
+
+    for game_type in ["slot", "dart", "bowling", "atyarisi"]:
+        games, wins, wagered, paid = stat_rows.get(game_type, (0, 0, 0, 0))
+        total_games += games
+        total_wins += wins
+        total_wagered += wagered
+        total_paid += paid
+        win_rate = (wins / games * 100) if games else 0
+        net = wagered - paid
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎"}.get(game_type, "🎮")
+        detail_text += (
+            f"{icon} **{game_type.upper()}**\n"
+            f"Oyun: {games} | Kazanç: %{win_rate:.1f}\n"
+            f"Yatırılan/Oynanan: {format_money(wagered)} | Kazanılan: {format_money(paid)}\n"
+            f"Kasa Net: {format_money(net)}\n\n"
+        )
+
+    win_rate_total = (total_wins / total_games * 100) if total_games else 0
+    net_total = total_wagered - total_paid
+
+    info_text = (
+        f"👤 **KULLANICI BİLGİ PANELİ**\n\n"
+        f"İsim: **{display_name}**\n"
+        f"ID: `{user_id}`\n"
+        f"💰 Bakiye: **{format_money(balance)}** Çip\n"
+        f"➕ Admin Eklenen: {format_money(total_added)}\n"
+        f"➖ Admin Silinen: {format_money(total_removed)}\n\n"
+        f"📊 **Genel Oyun Özeti**\n"
+        f"Toplam Oyun: {total_games}\n"
+        f"Toplam Kazanma: {total_wins} (%{win_rate_total:.1f})\n"
+        f"Toplam Yatırılan/Oynanan: {format_money(total_wagered)}\n"
+        f"Toplam Kazanılan: {format_money(total_paid)}\n"
+        f"Kasa Net: **{format_money(net_total)}**\n\n"
+        f"🎮 **Oyun Bazlı Detay**\n"
+        f"{detail_text}"
+    )
+
+    await update.message.reply_text(info_text, parse_mode="Markdown", message_thread_id=thread_id)
+
 async def reset_panel_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     thread_id = update.message.message_thread_id if update.message else None
@@ -709,6 +903,7 @@ async def reset_panel_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE game_stats SET total_games=0, winning_games=0, total_wagered=0, total_paid=0")
+    cursor.execute("UPDATE user_game_stats SET total_games=0, winning_games=0, total_wagered=0, total_paid=0")
     conn.commit()
     conn.close()
     
@@ -763,9 +958,11 @@ async def main():
     application.add_handler(CommandHandler("bakiyeekle", add_balance_admin))
     application.add_handler(CommandHandler("bakiyesil", remove_balance_admin))
     application.add_handler(CommandHandler("panel", admin_panel))
+    application.add_handler(CommandHandler("bilgi", user_info_admin))
     application.add_handler(CommandHandler("panelsifirla", reset_panel_admin))
     application.add_handler(CommandHandler("duyuru", broadcast_admin))
 
+    print(f"📁 Veritabanı: {DB_NAME}")
     print("🎰 Casino botu aktif... Oyun bazlı istatistikler devrede. (Polling başlatılıyor)")
     
     await application.initialize()
