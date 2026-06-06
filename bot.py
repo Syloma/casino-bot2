@@ -165,6 +165,15 @@ def init_db():
             PRIMARY KEY (user_id, game_type)
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS free_game_stats (
+            game_type TEXT PRIMARY KEY,
+            total_games INTEGER DEFAULT 0,
+            winning_games INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", ("olympos1",))
     
     conn.commit()
     conn.close()
@@ -322,6 +331,41 @@ def update_game_stats(game_type, wagered_amount, paid_amount, is_win, user_id=No
     conn.commit()
     conn.close()
 
+def update_free_game_stats(game_type, is_win):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", (game_type,))
+    cursor.execute(
+        """
+        UPDATE free_game_stats
+        SET total_games = total_games + 1,
+            winning_games = winning_games + ?
+        WHERE game_type = ?
+        """,
+        (1 if is_win else 0, game_type)
+    )
+    cursor.execute(
+        "SELECT total_games, winning_games FROM free_game_stats WHERE game_type = ?",
+        (game_type,)
+    )
+    total_games, winning_games = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    return total_games, winning_games
+
+def get_free_game_stats(game_type):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", (game_type,))
+    cursor.execute(
+        "SELECT total_games, winning_games FROM free_game_stats WHERE game_type = ?",
+        (game_type,)
+    )
+    total_games, winning_games = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    return total_games, winning_games
+
 # --- 4. OYUNCU KOMUTLARI VE OYUNLAR ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -339,7 +383,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Bahis]` -> Bowling topu fırlatır. 🎳\n"
         f"• `/atyarisi [Bahis] [At No]` -> At yarışı oynar. 🐎\n\n"
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
-        f"• `/olympos1` -> Bahissiz Olympos bilgisi verir. 🏛️\n\n"
+        f"• `/olympos` -> Bahissiz Olympos oynar. 🏛️\n"
+        f"• `/olympos1` -> Olympos genel istatistiğini gösterir. 📊\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -597,6 +642,7 @@ async def play_olympos_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bonus_text = f"\n⚡ **Bonus Çarpan:** x{bonus_multiplier}"
 
     if total_multiplier > 0:
+        update_free_game_stats("olympos1", True)
         result_text = (
             f"🏛️ **OLYMPOS PATLADI!**\n"
             f"En iyi sembol: {best_symbol} x{best_count}\n"
@@ -604,6 +650,7 @@ async def play_olympos_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"_Bahissiz mod: bakiye değişmedi._"
         )
     else:
+        update_free_game_stats("olympos1", False)
         result_text = (
             f"🌫️ **Olympos sessiz kaldı.**\n"
             f"En iyi sembol: {best_symbol} x{best_count}\n"
@@ -613,6 +660,40 @@ async def play_olympos_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"```\n{render_olympos_grid(grid)}\n```\n{result_text}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def olympوس_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+    total_games, winning_games = get_free_game_stats("olympos1")
+    losing_games = total_games - winning_games
+    win_rate = (winning_games / total_games * 100) if total_games else 0
+
+    await update.message.reply_text(
+        f"📊 **OLYMPOS GENEL İSTATİSTİK**\n\n"
+        f"Toplam Oyun: **{total_games}**\n"
+        f"Kazandı/Kaybetti: **{winning_games}/{losing_games}**\n"
+        f"Kazanma Oranı: **%{win_rate:.1f}**\n\n"
+        f"_Bu istatistik bahissiz Olympos içindir; kasa paneline dahil değildir._",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def olympus_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+    total_games, winning_games = get_free_game_stats("olympos1")
+    losing_games = total_games - winning_games
+    win_rate = (winning_games / total_games * 100) if total_games else 0
+
+    await update.message.reply_text(
+        f"📊 **OLYMPOS GENEL İSTATİSTİK**\n\n"
+        f"Toplam Oyun: **{total_games}**\n"
+        f"Kazandı/Kaybetti: **{winning_games}/{losing_games}**\n"
+        f"Kazanma Oranı: **%{win_rate:.1f}**\n\n"
+        f"_Bu istatistik bahissiz Olympos içindir; kasa paneline dahil değildir._",
         parse_mode="Markdown",
         message_thread_id=thread_id
     )
@@ -871,7 +952,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
         f"  Kırmızı/Siyah: %49 x1.9 | Yeşil: %2 x35\n\n"
-        f"• `/olympos1` - Bahissiz çarpanlı Olympos bilgi/eğlence modu\n\n"
+        f"• `/olympos` - Bahissiz çarpanlı Olympos eğlence modu\n"
+        f"• `/olympos1` - Herkesin Olympos genel istatistiğini gösterir\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
@@ -1201,7 +1283,10 @@ async def main():
     application.add_handler(CommandHandler("bowling", play_bowling))
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
     application.add_handler(CommandHandler("rulet", play_roulette))
-    application.add_handler(CommandHandler("olympos1", play_olympos_free))
+    application.add_handler(CommandHandler("olympos", play_olympos_free))
+    application.add_handler(CommandHandler("olympos1", olympus_stats))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^olympos$"), play_olympos_free))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^olympos1$"), olympus_stats))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("transfer", transfer_command))
