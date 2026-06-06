@@ -1111,16 +1111,18 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_wagered += wagered
         total_paid += paid
         win_rate = (wins / games * 100) if games else 0
+        losses = games - wins
         net = wagered - paid
         icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡"}.get(game_type, "🎮")
         detail_text += (
             f"{icon} **{game_type.upper()}**\n"
-            f"Oyun: {games} | Kazanç: %{win_rate:.1f}\n"
+            f"Oyun: {games} | Kazandı/Kaybetti: {wins}/{losses} | Kazanç: %{win_rate:.1f}\n"
             f"Yatırılan/Oynanan: {format_money(wagered)} | Kazanılan: {format_money(paid)}\n"
             f"Kasa Net: {format_money(net)}\n\n"
         )
 
     win_rate_total = (total_wins / total_games * 100) if total_games else 0
+    total_losses = total_games - total_wins
     net_total = total_wagered - total_paid
 
     info_text = (
@@ -1132,6 +1134,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"➖ Admin Silinen: {format_money(total_removed)}\n\n"
         f"📊 **Genel Oyun Özeti**\n"
         f"Toplam Oyun: {total_games}\n"
+        f"Kazandı/Kaybetti: {total_wins}/{total_losses}\n"
         f"Toplam Kazanma: {total_wins} (%{win_rate_total:.1f})\n"
         f"Toplam Yatırılan/Oynanan: {format_money(total_wagered)}\n"
         f"Toplam Kazanılan: {format_money(total_paid)}\n"
