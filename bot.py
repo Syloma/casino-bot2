@@ -612,7 +612,7 @@ async def dealer_play_blackjack(update, context, game):
     player_value = blackjack_hand_value(game["player_hand"])
     dealer_value = blackjack_hand_value(game["dealer_hand"])
 
-    win_multiplier = 4.5 if game.get("doubled") else 2.5
+    win_multiplier = 4 if game.get("doubled") else 1.95
 
     if dealer_value > 21:
         paid_amount = int(game["bet"] * win_multiplier)
@@ -683,8 +683,8 @@ async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dealer_value == 21:
             await finish_blackjack_game(update, context, game, "🤝 İki taraf da blackjack yaptı. Bahsin iade edildi.", bet, False)
         else:
-            paid_amount = bet * 3
-            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x3** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
+            paid_amount = bet * 2.7
+            await finish_blackjack_game(update, context, game, f"🎉 **DOĞAL BLACKJACK!** Bahsinin **x2.7** katını aldın. (+{format_money(paid_amount - bet)})", paid_amount, True)
         return
 
     await update.message.reply_text(
