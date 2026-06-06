@@ -376,13 +376,13 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = ""
 
     if val == 64: # 777 durumu
-        win_amount = bet * 22
+        win_amount = bet * 24
         is_win = True
         result_text = f"🎉 **7-7-7 GELDİ!** 22 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 7.5
+        win_amount = bet * 8
         is_win = True
-        result_text = f"🔥 **3'lü Kombinasyon!** 7.5 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🔥 **3'lü Kombinasyon!** 8 Katını kazandın! (+{format_money(win_amount)})"
     else:
         win_amount = 0
         is_win = False
