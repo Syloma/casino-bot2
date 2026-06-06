@@ -145,13 +145,13 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message else None
 
     if not context.args:
-        await update.message.reply_text("❌ Kullanım: /slot [Miktar] (Min 20t - Max 100t)", message_thread_id=thread_id)
+        await update.message.reply_text("❌ Kullanım: /slot [Miktar] (Min 10t - Max 250t)", message_thread_id=thread_id)
         return
 
     bet = parse_money(context.args[0])
     # 20t ve 100t sınırları
-    if bet is None or bet < 20 * 10**12 or bet > 100 * 10**12:
-        await update.message.reply_text("❌ Hatalı bahis! (Min 20t - Max 100t)", message_thread_id=thread_id)
+    if bet is None or bet < 10 * 10**12 or bet > 250 * 10**12:
+        await update.message.reply_text("❌ Hatalı bahis! (Min 10t - Max 250t)", message_thread_id=thread_id)
         return
 
     if get_balance(user_id) < bet:
@@ -170,13 +170,13 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = ""
 
     if val == 64: # 777 durumu
-        win_amount = bet * 15
+        win_amount = bet * 20
         is_win = True
-        result_text = f"🎉 **7-7-7 GELDİ!** 15 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🎉 **7-7-7 GELDİ!** 20 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 6
+        win_amount = bet * 9
         is_win = True
-        result_text = f"🔥 **3'lü Kombinasyon!** 6 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🔥 **3'lü Kombinasyon!** 9 Katını kazandın! (+{format_money(win_amount)})"
     else:
         win_amount = 0
         is_win = False
@@ -220,9 +220,9 @@ async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 4.5
+        win_amount = bet * 7
         is_win = True
-        result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 4.5 Katını Kazandın! (+{format_money(win_amount)})**"
+        result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 7 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
         result_text = f"😔 **Karavana!** (-{format_money(bet)})\nİstediğin atışı yapamadın."
 
@@ -262,9 +262,9 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 4.5
+        win_amount = bet * 7
         is_win = True
-        result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 4.5 Katını Kazandın! (+{format_money(win_amount)})**"
+        result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 7 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
         result_text = f"😔 **Oluk!** (-{format_money(bet)})\nTop yoldan çıktı veya az labut devrildi."
 
