@@ -73,9 +73,9 @@ def format_money(amount):
 
 # --- OYUN LİMİTLERİ ---
 MIN_BET_DART_BOWL = parse_money("10t")
-MAX_BET_DART_BOWL = parse_money("200t")
-MIN_BET_SLOT = parse_money("20t")
-MAX_BET_SLOT = parse_money("250t")
+MAX_BET_DART_BOWL = parse_money("100t")
+MIN_BET_SLOT = parse_money("10t")
+MAX_BET_SLOT = parse_money("100t")
 MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
 HORSE_CONFIG = {
@@ -85,7 +85,7 @@ HORSE_CONFIG = {
     4: {"name": "Kara İnci", "chance": 13, "multiplier": 7.5},
     5: {"name": "Kasırga", "chance": 12, "multiplier": 8},
     6: {"name": "Gölge", "chance": 10, "multiplier": 10},
-    7: {"name": "Yıldırım", "chance": 8, "multiplier": 15},
+    7: {"name": "Morning", "chance": 8, "multiplier": 20},
     8: {"name": "Roket", "chance": 10, "multiplier": 10},
 }
 HORSE_FINISH_LINE = 14
@@ -346,13 +346,13 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = ""
 
     if val == 64: # 777 durumu
-        win_amount = bet * 20
+        win_amount = bet * 25
         is_win = True
-        result_text = f"🎉 **7-7-7 GELDİ!** 20 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🎉 **7-7-7 GELDİ!** 25 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 9
+        win_amount = bet * 7
         is_win = True
-        result_text = f"🔥 **3'lü Kombinasyon!** 9 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🔥 **3'lü Kombinasyon!** 7 Katını kazandın! (+{format_money(win_amount)})"
     else:
         win_amount = 0
         is_win = False
@@ -399,9 +399,9 @@ async def play_dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 5
+        win_amount = bet * 4
         is_win = True
-        result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 5 Katını Kazandın! (+{format_money(win_amount)})**"
+        result_text = f"🎯 **TAM İSABET! BAŞARILI ATIŞ!** 🎯\n🔥 **Bahsinin 4 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
         result_text = f"😔 **Karavana!** (-{format_money(bet)})\nİstediğin atışı yapamadın."
 
@@ -444,9 +444,9 @@ async def play_bowling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_win = False
     
     if dice_value == 6:
-        win_amount = bet * 5.5
+        win_amount = bet * 5
         is_win = True
-        result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 5.5 Katını Kazandın! (+{format_money(win_amount)})**"
+        result_text = f"🎳 **STRIKE! BAŞARILI ATIŞ!** 🎳\n🔥 **Bahsinin 5 Katını Kazandın! (+{format_money(win_amount)})**"
     else:
         result_text = f"😔 **Oluk!** (-{format_money(bet)})\nTop yoldan çıktı veya az labut devrildi."
 
@@ -670,6 +670,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
         f"• `/top10` - En zengin 10 oyuncuyu listeler\n"
+        f"• `/bilgi` - Kendi oyun ve bakiye istatistiklerini gösterir\n"
         f"• `/transfer [ID/@kullanıcı] [Miktar]` - Başka kullanıcıya çip gönderir\n"
     )
     
@@ -679,7 +680,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• `/bakiyeekle [ID/Yanıt] [Miktar]`\n"
             f"• `/bakiyesil [ID/Yanıt] [Miktar]`\n"
             f"• `/panel` - Kasa istatistiklerini ve oyun bazlı verileri gösterir\n"
-            f"• `/bilgi [ID/@kullanıcı]` - Kullanıcı bazlı oyun ve bakiye istatistiklerini gösterir\n"
+            f"• `/bilgi [ID/@kullanıcı]` - Başka kullanıcıların istatistiklerini gösterir\n"
             f"• `/panelsifirla` - Kasa istatistiklerini temizler\n"
             f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
         )
@@ -813,14 +814,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(panel_text, parse_mode="Markdown", message_thread_id=thread_id)
 
 async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS: return
+    is_admin = update.effective_user.id in ADMIN_IDS
     thread_id = update.message.message_thread_id if update.message else None
-    target_id = get_info_target(update, context)
+    target_id = get_info_target(update, context) if is_admin else update.effective_user.id
+    remember_user(update.effective_user)
 
     if target_id is None:
         await update.message.reply_text(
             "❌ Kullanım: `/bilgi [ID/@kullanıcı]`\n"
-            "Ya da kullanıcının mesajına yanıt verip `/bilgi` yaz.",
+            "Adminsen kullanıcının mesajına yanıt verip `/bilgi` de yazabilirsin.",
             parse_mode="Markdown",
             message_thread_id=thread_id
         )
