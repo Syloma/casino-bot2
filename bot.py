@@ -104,6 +104,8 @@ ROULETTE_OUTCOMES = [
     {"key": "siyah", "label": "Siyah", "chance": 49, "icon": "⚫"},
     {"key": "yesil", "label": "Yeşil", "chance": 2, "icon": "🟢"},
 ]
+OLYMPOS_SYMBOLS = ["⚡", "👑", "💎", "🔥", "🛡️", "🏺", "🍇", "💍"]
+OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
 ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette']
 HORSE_FINISH_LINE = 14
 GAME_COOLDOWN_SECONDS = 1
@@ -337,6 +339,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Bahis]` -> Bowling topu fırlatır. 🎳\n"
         f"• `/atyarisi [Bahis] [At No]` -> At yarışı oynar. 🐎\n\n"
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
+        f"• `/olympos` -> Bahissiz Olympos çevirir. 🏛️\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -380,9 +383,9 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_win = True
         result_text = f"🎉 **7-7-7 GELDİ!** 24 Katını kazandın! (+{format_money(win_amount)})"
     elif val in [1, 22, 43]: # 3'lü kombinasyon
-        win_amount = bet * 8
+        win_amount = bet * 7.5
         is_win = True
-        result_text = f"🔥 **3'lü Kombinasyon!** 8 Katını kazandın! (+{format_money(win_amount)})"
+        result_text = f"🔥 **3'lü Kombinasyon!** 7.5 Katını kazandın! (+{format_money(win_amount)})"
     else:
         win_amount = 0
         is_win = False
@@ -548,6 +551,68 @@ async def play_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(new_balance)} Çip",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+def render_olympos_grid(grid):
+    return "\n".join(" ".join(row) for row in grid)
+
+def draw_olympos_grid():
+    return [
+        [random.choice(OLYMPOS_SYMBOLS) for _ in range(6)]
+        for _ in range(5)
+    ]
+
+def get_olympos_base_multiplier(match_count):
+    if match_count >= 15:
+        return 25
+    if match_count >= 12:
+        return 8
+    if match_count >= 10:
+        return 3
+    if match_count >= 8:
+        return 1.5
+    return 0
+
+async def play_olympos_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+
+    await update.message.reply_text("⚡ **OLYMPOS KAPILARI AÇILIYOR...** ⚡", parse_mode="Markdown", message_thread_id=thread_id)
+    for spin_text in ["☁️ Bulutlar dağılıyor...", "⚡ Çarpanlar yükseliyor...", "🏛️ Tanrılar sonucu seçiyor..."]:
+        await asyncio.sleep(0.45)
+        await update.message.reply_text(spin_text, message_thread_id=thread_id)
+
+    grid = draw_olympos_grid()
+    counts = {symbol: sum(row.count(symbol) for row in grid) for symbol in OLYMPOS_SYMBOLS}
+    best_symbol, best_count = max(counts.items(), key=lambda item: item[1])
+    base_multiplier = get_olympos_base_multiplier(best_count)
+
+    bonus_text = ""
+    total_multiplier = base_multiplier
+    if base_multiplier > 0 and random.randint(1, 100) <= 25:
+        bonus_multiplier = random.choice(OLYMPOS_MULTIPLIERS)
+        total_multiplier *= bonus_multiplier
+        bonus_text = f"\n⚡ **Bonus Çarpan:** x{bonus_multiplier}"
+
+    if total_multiplier > 0:
+        result_text = (
+            f"🏛️ **OLYMPOS PATLADI!**\n"
+            f"En iyi sembol: {best_symbol} x{best_count}\n"
+            f"Sanal kazanç: **x{total_multiplier:g}**{bonus_text}\n"
+            f"_Bahissiz mod: bakiye değişmedi._"
+        )
+    else:
+        result_text = (
+            f"🌫️ **Olympos sessiz kaldı.**\n"
+            f"En iyi sembol: {best_symbol} x{best_count}\n"
+            f"Kazanç için en az 8 aynı sembol gerekiyordu.\n"
+            f"_Bahissiz mod: bakiye değişmedi._"
+        )
+
+    await update.message.reply_text(
+        f"```\n{render_olympos_grid(grid)}\n```\n{result_text}",
         parse_mode="Markdown",
         message_thread_id=thread_id
     )
@@ -805,6 +870,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
+        f"  Kırmızı/Siyah: %49 x1.9 | Yeşil: %2 x35\n\n"
+        f"• `/olympos` - Bahissiz çarpanlı Olympos eğlence modu\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
@@ -962,22 +1029,25 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_win_rate = (g_win / g_total * 100) if g_total > 0 else 0
         g_rtp = (g_paid / g_wag * 100) if g_wag > 0 else 0
         g_net = g_wag - g_paid
+        g_loss = g_total - g_win
         
         icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡"}.get(g_type, "🎮")
         
         panel_text += (
             f"{icon} **{g_type.upper()} İSTATİSTİKLERİ:**\n"
-            f"Oyun: {g_total} | Kazanç: %{g_win_rate:.1f} | RTP: %{g_rtp:.1f}\n"
+            f"Oyun: {g_total} | Kazandı/Kaybetti: {g_win}/{g_loss} | Kazanç: %{g_win_rate:.1f} | RTP: %{g_rtp:.1f}\n"
             f"Kasa Karı: {format_money(g_net)}\n\n"
         )
 
     win_rate_genel = (k_oyun_genel / t_oyun_genel * 100) if t_oyun_genel > 0 else 0
     rtp_genel = (t_odenen_genel / t_bahis_genel * 100) if t_bahis_genel > 0 else 0
     net_kar_genel = t_bahis_genel - t_odenen_genel
+    kayip_oyun_genel = t_oyun_genel - k_oyun_genel
 
     panel_text += (
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🏦 **GENEL KASA DURUMU:**\n"
+        f"• Kazandı/Kaybetti: {k_oyun_genel}/{kayip_oyun_genel}\n"
         f"• Toplam Dönen: {format_money(t_bahis_genel)}\n"
         f"• Toplam Dağıtılan: {format_money(t_odenen_genel)}\n"
         f"• **Toplam Kasa Karı:** {format_money(net_kar_genel)}\n"
@@ -1128,6 +1198,7 @@ async def main():
     application.add_handler(CommandHandler("bowling", play_bowling))
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
     application.add_handler(CommandHandler("rulet", play_roulette))
+    application.add_handler(CommandHandler("olympos", play_olympos_free))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("transfer", transfer_command))
