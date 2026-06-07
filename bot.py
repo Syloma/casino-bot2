@@ -83,14 +83,14 @@ MAX_BET_ROULETTE = parse_money("100t")
 MIN_BET_OLYMPOS = parse_money("10t")
 MAX_BET_OLYMPOS = parse_money("100t")
 HORSE_CONFIG = {
-    1: {"name": "Süleyman", "chance": 17, "multiplier": 5},
-    2: {"name": "Fırtına", "chance": 16, "multiplier": 6},
-    3: {"name": "Rüzgar", "chance": 14, "multiplier": 6.5},
-    4: {"name": "Kara İnci", "chance": 13, "multiplier": 7.5},
-    5: {"name": "Kasırga", "chance": 12, "multiplier": 8},
-    6: {"name": "Gölge", "chance": 10, "multiplier": 9},
-    7: {"name": "Morning", "chance": 8, "multiplier": 12},
-    8: {"name": "Roket", "chance": 10, "multiplier": 9},
+    1: {"name": "Süleyman", "chance": 17, "multiplier": 5},
+    2: {"name": "Fırtına", "chance": 16, "multiplier": 6},
+    3: {"name": "Rüzgar", "chance": 14, "multiplier": 6.5},
+    4: {"name": "Kara İnci", "chance": 13, "multiplier": 7.5},
+    5: {"name": "Kasırga", "chance": 12, "multiplier": 8},
+    6: {"name": "Gölge", "chance": 10, "multiplier": 9},
+    7: {"name": "Morning", "chance": 8, "multiplier": 20},
+    8: {"name": "Roket", "chance": 10, "multiplier": 9},
 }
 ROULETTE_CONFIG = {
     "kirmizi": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
