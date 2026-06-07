@@ -83,14 +83,14 @@ MAX_BET_ROULETTE = parse_money("100t")
 MIN_BET_OLYMPOS = parse_money("10t")
 MAX_BET_OLYMPOS = parse_money("100t")
 HORSE_CONFIG = {
-    1: {"name": "Süleyman", "chance": 17, "multiplier": 5},
-    2: {"name": "Fırtına", "chance": 16, "multiplier": 6},
-    3: {"name": "Rüzgar", "chance": 14, "multiplier": 6.5},
-    4: {"name": "Kara İnci", "chance": 13, "multiplier": 7.5},
-    5: {"name": "Kasırga", "chance": 12, "multiplier": 8},
-    6: {"name": "Gölge", "chance": 10, "multiplier": 9},
-    7: {"name": "Morning", "chance": 8, "multiplier": 20},
-    8: {"name": "Roket", "chance": 10, "multiplier": 9},
+    1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
+    2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
+    3: {"name": "Rüzgar", "chance": 15, "multiplier": 3},
+    4: {"name": "Kara İnci", "chance": 12, "multiplier": 4},
+    5: {"name": "Kasırga", "chance": 8, "multiplier": 6},
+    6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
+    7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
+    8: {"name": "Roket", "chance": 2, "multiplier": 20},
 }
 ROULETTE_CONFIG = {
     "kirmizi": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
@@ -102,15 +102,35 @@ ROULETTE_CONFIG = {
 ROULETTE_OUTCOMES = [
     {"key": "kirmizi", "label": "Kırmızı", "chance": 48, "icon": "🔴"},
     {"key": "siyah", "label": "Siyah", "chance": 48, "icon": "⚫"},
-    {"key": "yesil", "label": "Yeşil", "chance": 2, "icon": "🟢"},
+    {"key": "yesil", "label": "Yeşil", "chance": 1, "icon": "🟢"},
 ]
 OLYMPOS_SYMBOLS = ["⚡", "👑", "💎", "🔥", "🛡️", "🏺", "🍇", "💍"]
 OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
 ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette']
+HOUSE_MODE_WEIGHTS = {
+    "normal": (1.0, 1.0),
+    "comert": (1.20, 0.90),
+    "kisik": (0.55, 1.15),
+    "koruma": (0.25, 1.25),
+}
+HOUSE_MODE_ALIASES = {
+    "normal": "normal",
+    "standart": "normal",
+    "comert": "comert",
+    "cömert": "comert",
+    "kisik": "kisik",
+    "kısık": "kisik",
+    "koruma": "koruma",
+    "oto": "auto",
+    "auto": "auto",
+    "otomatik": "auto",
+}
 HORSE_FINISH_LINE = 14
 GAME_COOLDOWN_SECONDS = 1
 TELEGRAM_MESSAGE_TIMEOUT_SECONDS = 5
 MAINTENANCE_MODE = False
+HOUSE_RESERVE_RATE = 0.20
+PAYOUT_LIMIT_RATE = 1 - HOUSE_RESERVE_RATE
 last_game_times = {}
 
 
@@ -174,6 +194,13 @@ def init_db():
         )
     """)
     cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", ("olympos1",))
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
     
     conn.commit()
     conn.close()
@@ -365,6 +392,142 @@ def get_free_game_stats(game_type):
     conn.commit()
     conn.close()
     return total_games, winning_games
+
+def get_setting(key, default=None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    if value is None:
+        cursor.execute("DELETE FROM settings WHERE key = ?", (key,))
+    else:
+        cursor.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value)
+        )
+    conn.commit()
+    conn.close()
+
+def get_house_state(candidate_payout=0):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(total_added), SUM(total_removed) FROM users")
+    total_added, total_removed = cursor.fetchone()
+    placeholders = ",".join("?" for _ in ACTIVE_GAME_TYPES)
+    cursor.execute(
+        f"SELECT SUM(total_wagered), SUM(total_paid) FROM game_stats WHERE game_type IN ({placeholders})",
+        ACTIVE_GAME_TYPES
+    )
+    total_wagered, total_paid = cursor.fetchone()
+    conn.close()
+
+    total_added = total_added or 0
+    total_removed = total_removed or 0
+    total_wagered = total_wagered or 0
+    total_paid = total_paid or 0
+    payout_limit = int(total_added * PAYOUT_LIMIT_RATE)
+    projected_paid = total_paid + int(candidate_payout or 0)
+
+    if payout_limit <= 0:
+        auto_mode = "normal"
+    elif projected_paid <= payout_limit:
+        auto_mode = "comert"
+    elif projected_paid <= int(payout_limit * 1.10):
+        auto_mode = "kisik"
+    else:
+        auto_mode = "koruma"
+
+    override_mode = get_setting("house_mode_override")
+    if override_mode not in HOUSE_MODE_WEIGHTS:
+        override_mode = None
+
+    mode = override_mode or auto_mode
+    win_weight, loss_weight = HOUSE_MODE_WEIGHTS[mode]
+
+    return {
+        "mode": mode,
+        "auto_mode": auto_mode,
+        "override_mode": override_mode,
+        "total_added": total_added,
+        "total_removed": total_removed,
+        "total_wagered": total_wagered,
+        "total_paid": total_paid,
+        "payout_limit": payout_limit,
+        "projected_paid": projected_paid,
+        "win_weight": win_weight,
+        "loss_weight": loss_weight,
+    }
+
+def choose_roulette_outcome(selected_config, bet):
+    candidate_payout = int(bet * selected_config["multiplier"])
+    house_state = get_house_state(candidate_payout)
+    weights = []
+    for item in ROULETTE_OUTCOMES:
+        weight = item["chance"]
+        if item["label"] == selected_config["label"]:
+            weight *= house_state["win_weight"]
+        else:
+            weight *= house_state["loss_weight"]
+        weights.append(weight)
+    return random.choices(ROULETTE_OUTCOMES, weights=weights, k=1)[0]
+
+def choose_horse_winner(selected_horse, bet):
+    selected_multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
+    candidate_payout = int(bet * selected_multiplier)
+    house_state = get_house_state(candidate_payout)
+    horses = list(HORSE_CONFIG.keys())
+    weights = []
+    for horse in horses:
+        weight = HORSE_CONFIG[horse]["chance"]
+        if horse == selected_horse:
+            weight *= house_state["win_weight"]
+        else:
+            weight *= house_state["loss_weight"]
+        weights.append(weight)
+    return random.choices(horses, weights=weights, k=1)[0]
+
+def build_house_mode_text():
+    house_state = get_house_state()
+    payout_limit = house_state["payout_limit"]
+    total_paid = house_state["total_paid"]
+    limit_usage = (total_paid / payout_limit * 100) if payout_limit > 0 else 0
+    bar_filled = min(10, max(0, int(limit_usage // 10)))
+    usage_bar = "█" * bar_filled + "░" * (10 - bar_filled)
+    mode = house_state["mode"]
+    mode_info = {
+        "normal": ("⚪ NORMAL", "Henüz yeterli kasa verisi yok; oyunlar standart çalışıyor."),
+        "comert": ("🟢 CÖMERT", "Ödeme limiti rahat; rulet ve at yarışında kazanma tarafı hafif destekli."),
+        "kisik": ("🟡 KISIK", "Ödeme limiti aşıldı; kazanma ağırlığı düşürüldü ama oyun tamamen kapalı değil."),
+        "koruma": ("🔴 KORUMA", "Kasa limiti belirgin aşıldı; sistem daha sıkı koruma modunda."),
+    }
+    mode_label, mode_desc = mode_info.get(mode, (mode.upper(), "Mod bilgisi hesaplandı."))
+    control_text = (
+        f"Manuel mod aktif: **{mode_label}**"
+        if house_state["override_mode"]
+        else "Otomatik mod aktif"
+    )
+    auto_label = mode_info.get(house_state["auto_mode"], (house_state["auto_mode"].upper(), ""))[0]
+
+    return (
+        f"🧭 **KASA MODU**\n\n"
+        f"Durum: **{mode_label}**\n"
+        f"{mode_desc}\n\n"
+        f"🎛️ Kontrol: {control_text}\n"
+        f"🤖 Otomatik Hesap: **{auto_label}**\n\n"
+        f"💰 Toplam Yatırılan: **{format_money(house_state['total_added'])}**\n"
+        f"🎯 Ödeme Limiti (%80): **{format_money(payout_limit)}**\n"
+        f"💸 Toplam Dağıtılan: **{format_money(total_paid)}**\n"
+        f"📊 Limit Kullanımı: **%{limit_usage:.1f}**\n"
+        f"`{usage_bar}`\n\n"
+        f"⚙️ Şu anki ağırlıklar: Kazanç x{house_state['win_weight']:.2f} | Kayıp x{house_state['loss_weight']:.2f}\n\n"
+        f"`/mod normal`, `/mod comert`, `/mod kisik`, `/mod koruma`, `/mod oto`"
+    )
 
 # --- 4. OYUNCU KOMUTLARI VE OYUNLAR ---
 
@@ -572,11 +735,7 @@ async def play_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     update_balance(user_id, -bet)
 
-    outcome = random.choices(
-        ROULETTE_OUTCOMES,
-        weights=[item["chance"] for item in ROULETTE_OUTCOMES],
-        k=1
-    )[0]
+    outcome = choose_roulette_outcome(selected_config, bet)
 
     is_win = outcome["label"] == selected_config["label"]
     win_amount = int(bet * selected_config["multiplier"]) if is_win else 0
@@ -807,9 +966,7 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await asyncio.sleep(1.2)
-        horses = list(HORSE_CONFIG.keys())
-        weights = [HORSE_CONFIG[horse]["chance"] for horse in horses]
-        winner = random.choices(horses, weights=weights, k=1)[0]
+        winner = choose_horse_winner(selected_horse, bet)
 
         is_win = winner == selected_horse
         multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
@@ -940,6 +1097,7 @@ async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    is_admin = user_id in ADMIN_IDS
     remember_user(update.effective_user)
     thread_id = update.message.message_thread_id if update.message else None
     
@@ -951,7 +1109,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
-        f"  Kırmızı/Siyah: %49 x1.9 | Yeşil: %2 x35\n\n"
         f"• `/olympos` - Bahissiz çarpanlı Olympos eğlence modu\n"
         f"• `/olympos1` - Herkesin Olympos genel istatistiğini gösterir\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
@@ -962,12 +1119,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/transfer [ID/@kullanıcı] [Miktar]` - Başka kullanıcıya çip gönderir\n"
     )
     
-    if user_id in ADMIN_IDS:
+    if is_admin:
         help_text += (
             f"\n⚡ **[ADMİN ÖZEL] Yönetim Komutları:**\n"
             f"• `/bakiyeekle [ID/Yanıt] [Miktar]`\n"
             f"• `/bakiyesil [ID/Yanıt] [Miktar]`\n"
             f"• `/panel` - Kasa istatistiklerini ve oyun bazlı verileri gösterir\n"
+            f"• `/mod [normal/comert/kisik/koruma/oto]` - Kasa modunu gösterir veya değiştirir\n"
             f"• `/bilgi [ID/@kullanıcı]` - Başka kullanıcıların istatistiklerini gösterir\n"
             f"• `/panelsifirla` - Kasa istatistiklerini temizler\n"
             f"• `/bakim ac|kapat|durum` - Bot bakım modunu yönetir\n"
@@ -1008,6 +1166,33 @@ async def maintenance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             message_thread_id=thread_id
         )
+
+async def house_mode_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    if context.args:
+        requested_mode = context.args[0].lower().strip()
+        mode = HOUSE_MODE_ALIASES.get(requested_mode)
+        if mode is None:
+            await update.message.reply_text(
+                "❌ Kullanım: `/mod normal`, `/mod comert`, `/mod kisik`, `/mod koruma` veya `/mod oto`",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+            return
+
+        if mode == "auto":
+            set_setting("house_mode_override", None)
+        else:
+            set_setting("house_mode_override", mode)
+
+    await update.message.reply_text(
+        build_house_mode_text(),
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
 
 def get_target_and_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
@@ -1090,6 +1275,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     toplam_oyuncu = user_stats[0] or 0
     piyasadaki_cip = user_stats[1] or 0
+    house_state = get_house_state()
+    limit_usage = (
+        house_state["total_paid"] / house_state["payout_limit"] * 100
+        if house_state["payout_limit"] > 0 else 0
+    )
     
     panel_text = (
         f"📊 **CASINO ADMİN PANELİ** 📊\n\n"
@@ -1097,6 +1287,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Kayıtlı Oyuncu: {toplam_oyuncu}\n"
         f"• Piyasadaki Toplam Çip: {format_money(piyasadaki_cip)}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    panel_text += (
+        f"Toplam Yatirilan: {format_money(house_state['total_added'])}\n"
+        f"%80 Odeme Limiti: {format_money(house_state['payout_limit'])} | Kullanim: %{limit_usage:.1f}\n"
+        f"Kasa Modu: {house_state['mode'].upper()}\n\n"
     )
 
     t_oyun_genel, k_oyun_genel, t_bahis_genel, t_odenen_genel = 0, 0, 0, 0
@@ -1296,6 +1492,7 @@ async def main():
     application.add_handler(CommandHandler("bakiyeekle", add_balance_admin))
     application.add_handler(CommandHandler("bakiyesil", remove_balance_admin))
     application.add_handler(CommandHandler("panel", admin_panel))
+    application.add_handler(CommandHandler("mod", house_mode_admin))
     application.add_handler(CommandHandler("bilgi", user_info_admin))
     application.add_handler(CommandHandler("panelsifirla", reset_panel_admin))
     application.add_handler(CommandHandler("bakim", maintenance_admin))
