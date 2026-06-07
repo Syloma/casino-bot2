@@ -93,16 +93,16 @@ HORSE_CONFIG = {
     8: {"name": "Roket", "chance": 10, "multiplier": 10},
 }
 ROULETTE_CONFIG = {
-    "kirmizi": {"label": "Kırmızı", "chance": 49, "multiplier": 1.9, "icon": "🔴"},
-    "kırmızı": {"label": "Kırmızı", "chance": 49, "multiplier": 1.9, "icon": "🔴"},
-    "siyah": {"label": "Siyah", "chance": 49, "multiplier": 1.9, "icon": "⚫"},
-    "yesil": {"label": "Yeşil", "chance": 2, "multiplier": 35, "icon": "🟢"},
-    "yeşil": {"label": "Yeşil", "chance": 2, "multiplier": 35, "icon": "🟢"},
+    "kirmizi": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
+    "kırmızı": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
+    "siyah": {"label": "Siyah", "chance": 48, "multiplier": 1.9, "icon": "⚫"},
+    "yesil": {"label": "Yeşil", "chance": 4, "multiplier": 35, "icon": "🟢"},
+    "yeşil": {"label": "Yeşil", "chance": 4, "multiplier": 35, "icon": "🟢"},
 }
 ROULETTE_OUTCOMES = [
-    {"key": "kirmizi", "label": "Kırmızı", "chance": 49, "icon": "🔴"},
-    {"key": "siyah", "label": "Siyah", "chance": 49, "icon": "⚫"},
-    {"key": "yesil", "label": "Yeşil", "chance": 2, "icon": "🟢"},
+    {"key": "kirmizi", "label": "Kırmızı", "chance": 48, "icon": "🔴"},
+    {"key": "siyah", "label": "Siyah", "chance": 48, "icon": "⚫"},
+    {"key": "yesil", "label": "Yeşil", "chance": 4, "icon": "🟢"},
 ]
 OLYMPOS_SYMBOLS = ["⚡", "👑", "💎", "🔥", "🛡️", "🏺", "🍇", "💍"]
 OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
