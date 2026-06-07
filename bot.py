@@ -90,7 +90,7 @@ HORSE_CONFIG = {
     5: {"name": "Kasırga", "chance": 8, "multiplier": 6},
     6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
     7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
-    8: {"name": "Volkan Arslan": 2,"multiplier": 20},
+    8: {"name": "Roket", "chance": 2, "multiplier": 20},
 }
 ROULETTE_CONFIG = {
     "kirmizi": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
