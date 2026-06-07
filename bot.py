@@ -96,8 +96,8 @@ ROULETTE_CONFIG = {
     "kirmizi": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
     "kırmızı": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
     "siyah": {"label": "Siyah", "chance": 48, "multiplier": 1.9, "icon": "⚫"},
-    "yesil": {"label": "Yeşil", "chance": 4, "multiplier": 35, "icon": "🟢"},
-    "yeşil": {"label": "Yeşil", "chance": 4, "multiplier": 35, "icon": "🟢"},
+    "yesil": {"label": "Yeşil", "chance": 2, "multiplier": 35, "icon": "🟢"},
+    "yeşil": {"label": "Yeşil", "chance": 2, "multiplier": 35, "icon": "🟢"},
 }
 ROULETTE_OUTCOMES = [
     {"key": "kirmizi", "label": "Kırmızı", "chance": 48, "icon": "🔴"},
