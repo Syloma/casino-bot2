@@ -83,7 +83,7 @@ MAX_BET_ROULETTE = parse_money("100t")
 MIN_BET_OLYMPOS = parse_money("10t")
 MAX_BET_OLYMPOS = parse_money("100t")
 HORSE_CONFIG = {
-    1: {"name": "Süleyman", "chance": 35, "multiplier": 2},
+    1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
     2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
     3: {"name": "Rüzgar", "chance": 15, "multiplier": 3},
     4: {"name": "Kara İnci", "chance": 12, "multiplier": 4},
@@ -109,7 +109,7 @@ OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
 ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette']
 HOUSE_MODE_WEIGHTS = {
     "normal": (1.5, 1.0),
-    "comert": (3.0, 0.90),
+    "comert": (5.0, 0.90),
     "kisik": (1.0, 1.15),
     "koruma": (0.25, 1.25),
 }
@@ -1287,6 +1287,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Kayıtlı Oyuncu: {toplam_oyuncu}\n"
         f"• Piyasadaki Toplam Çip: {format_money(piyasadaki_cip)}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    panel_text += (
+        f"Toplam Yatirilan: {format_money(house_state['total_added'])}\n"
+        f"%80 Odeme Limiti: {format_money(house_state['payout_limit'])} | Kullanim: %{limit_usage:.1f}\n\n"
     )
 
     t_oyun_genel, k_oyun_genel, t_bahis_genel, t_odenen_genel = 0, 0, 0, 0
