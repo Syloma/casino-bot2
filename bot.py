@@ -1289,12 +1289,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
-    panel_text += (
-        f"Toplam Yatirilan: {format_money(house_state['total_added'])}\n"
-        f"%80 Odeme Limiti: {format_money(house_state['payout_limit'])} | Kullanim: %{limit_usage:.1f}\n"
-        f"Kasa Modu: {house_state['mode'].upper()}\n\n"
-    )
-
     t_oyun_genel, k_oyun_genel, t_bahis_genel, t_odenen_genel = 0, 0, 0, 0
 
     for row in game_rows:
