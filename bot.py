@@ -102,7 +102,7 @@ ROULETTE_CONFIG = {
 ROULETTE_OUTCOMES = [
     {"key": "kirmizi", "label": "Kırmızı", "chance": 48, "icon": "🔴"},
     {"key": "siyah", "label": "Siyah", "chance": 48, "icon": "⚫"},
-    {"key": "yesil", "label": "Yeşil", "chance": 4, "icon": "🟢"},
+    {"key": "yesil", "label": "Yeşil", "chance": 2, "icon": "🟢"},
 ]
 OLYMPOS_SYMBOLS = ["⚡", "👑", "💎", "🔥", "🛡️", "🏺", "🍇", "💍"]
 OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
