@@ -108,9 +108,9 @@ OLYMPOS_SYMBOLS = ["⚡", "👑", "💎", "🔥", "🛡️", "🏺", "🍇", "�
 OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
 ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette']
 HOUSE_MODE_WEIGHTS = {
-    "normal": (1.0, 1.0),
-    "comert": (1.20, 0.90),
-    "kisik": (0.55, 1.15),
+    "normal": (1.5, 1.0),
+    "comert": (3.0, 0.90),
+    "kisik": (1.0, 1.15),
     "koruma": (0.25, 1.25),
 }
 HOUSE_MODE_ALIASES = {
