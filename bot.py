@@ -83,7 +83,7 @@ MAX_BET_ROULETTE = parse_money("100t")
 MIN_BET_OLYMPOS = parse_money("10t")
 MAX_BET_OLYMPOS = parse_money("100t")
 HORSE_CONFIG = {
-    1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
+    1: {"name": "Süleyman", "chance": 35, "multiplier": 2},
     2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
     3: {"name": "Rüzgar", "chance": 15, "multiplier": 3},
     4: {"name": "Kara İnci", "chance": 12, "multiplier": 4},
