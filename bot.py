@@ -80,8 +80,8 @@ MIN_BET_HORSE = parse_money("10t")
 MAX_BET_HORSE = parse_money("100t")
 MIN_BET_ROULETTE = parse_money("10t")
 MAX_BET_ROULETTE = parse_money("100t")
-MIN_BET_OLYMPOS = parse_money("10t")
-MAX_BET_OLYMPOS = parse_money("100t")
+MIN_BET_LCDP = parse_money("10t")
+MAX_BET_LCDP = parse_money("100t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
     2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
@@ -90,7 +90,7 @@ HORSE_CONFIG = {
     5: {"name": "Kasırga", "chance": 8, "multiplier": 6},
     6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
     7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
-    8: {"name": "Roket", "chance": 2, "multiplier": 20},
+    8: {"name": "Volkan Arslan": 2,"multiplier": 20},
 }
 ROULETTE_CONFIG = {
     "kirmizi": {"label": "Kırmızı", "chance": 48, "multiplier": 1.9, "icon": "🔴"},
@@ -104,26 +104,87 @@ ROULETTE_OUTCOMES = [
     {"key": "siyah", "label": "Siyah", "chance": 48, "icon": "⚫"},
     {"key": "yesil", "label": "Yeşil", "chance": 1, "icon": "🟢"},
 ]
-OLYMPOS_SYMBOLS = ["⚡", "👑", "💎", "🔥", "🛡️", "🏺", "🍇", "💍"]
-OLYMPOS_MULTIPLIERS = [2, 3, 5, 10, 25, 50, 100]
-ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette']
+LCDP_SYMBOL_CONFIG = [
+    {"symbol": "🍇", "weight": 28, "pays": {8: 0.225, 10: 0.525, 12: 1.2, 15: 3}},
+    {"symbol": "🏺", "weight": 23, "pays": {8: 0.3, 10: 0.75, 12: 1.8, 15: 4.5}},
+    {"symbol": "🛡️", "weight": 18, "pays": {8: 0.42, 10: 1.125, 12: 3.0, 15: 7.5}},
+    {"symbol": "🔥", "weight": 13, "pays": {8: 0.675, 10: 1.8, 12: 4.5, 15: 13.5}},
+    {"symbol": "⚡", "weight": 9, "pays": {8: 1.2, 10: 3.3, 12: 9.0, 15: 33}},
+    {"symbol": "👑", "weight": 5, "pays": {8: 2.25, 10: 6.75, 12: 21.0, 15: 67.5}},
+    {"symbol": "💎", "weight": 3, "pays": {8: 3.75, 10: 12.0, 12: 42.0, 15: 135}},
+    {"symbol": "💍", "weight": 1, "pays": {8: 7.5, 10: 27.0, 12: 90.0, 15: 270}},
+]
+LCDP_SYMBOLS = [item["symbol"] for item in LCDP_SYMBOL_CONFIG]
+LCDP_SYMBOL_WEIGHTS = [item["weight"] for item in LCDP_SYMBOL_CONFIG]
+LCDP_PAYTABLE = {item["symbol"]: item["pays"] for item in LCDP_SYMBOL_CONFIG}
+LCDP_MULTIPLIER_TABLE = [
+    (0, 60.0),
+    (2, 20.0),
+    (3, 10.0),
+    (5, 5.0),
+    (8, 3.0),
+    (10, 1.0),
+    (20, 0.65),
+    (50, 0.25),
+    (100, 0.10),
+]
+LCDP_FREE_SPIN_MULTIPLIER_TABLE = [
+    (0, 49.55),
+    (2, 22),
+    (3, 10),
+    (5, 5),
+    (8, 3),
+    (10, 1.8),
+    (20, 1.0),
+    (50, 0.5),
+    (100, 0.15),
+]
+LCDP_FREE_SPIN_EXTRA_MULTIPLIER_ROLLS = [
+    (0, 55),
+    (1, 25),
+    (2, 5),
+    (3, 1.0),
+]
+LCDP_FREE_SPIN_SYMBOL = "💍"
+LCDP_FREE_SPIN_TRIGGER_COUNT = 3
+LCDP_FREE_SPIN_COUNT = 10
+LCDP_FREE_SPIN_BUY_MULTIPLIER = 100
+MIN_LCDP_FREE_SPIN_BUY = parse_money("100t")
+MAX_LCDP_FREE_SPIN_BUY = parse_money("1kt")
+LCDP_FREE_SPIN_BUY_ALIASES = {"freespin", "free", "fs", "satinal", "satınal", "satın", "satin"}
+ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette', 'lcdp']
+TEST_GAME_ALIASES = {
+    "all": "all",
+    "hepsi": "all",
+    "tum": "all",
+    "tüm": "all",
+    "slot": "slot",
+    "dart": "dart",
+    "bowling": "bowling",
+    "atyarisi": "atyarisi",
+    "at": "atyarisi",
+    "horse": "atyarisi",
+    "rulet": "roulette",
+    "roulette": "roulette",
+    "lcdp": "lcdp",
+}
 HOUSE_MODE_WEIGHTS = {
-    "normal": (1.5, 1.0),
-    "comert": (5.0, 0.90),
-    "kisik": (1.0, 1.15),
-    "koruma": (0.25, 1.25),
+    "normal": (1.0, 1.0),
 }
 HOUSE_MODE_ALIASES = {
     "normal": "normal",
     "standart": "normal",
-    "comert": "comert",
-    "cömert": "comert",
-    "kisik": "kisik",
-    "kısık": "kisik",
-    "koruma": "koruma",
-    "oto": "auto",
-    "auto": "auto",
-    "otomatik": "auto",
+}
+FORCED_MODE_ALIASES = {
+    "kazan": "win",
+    "kazandir": "win",
+    "kazandır": "win",
+    "win": "win",
+    "kaybet": "lose",
+    "kaybettir": "lose",
+    "lose": "lose",
+    "oran": "rate",
+    "rate": "rate",
 }
 HORSE_FINISH_LINE = 14
 GAME_COOLDOWN_SECONDS = 1
@@ -185,15 +246,6 @@ def init_db():
             PRIMARY KEY (user_id, game_type)
         )
     """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS free_game_stats (
-            game_type TEXT PRIMARY KEY,
-            total_games INTEGER DEFAULT 0,
-            winning_games INTEGER DEFAULT 0
-        )
-    """)
-    cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", ("olympos1",))
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
@@ -358,41 +410,6 @@ def update_game_stats(game_type, wagered_amount, paid_amount, is_win, user_id=No
     conn.commit()
     conn.close()
 
-def update_free_game_stats(game_type, is_win):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", (game_type,))
-    cursor.execute(
-        """
-        UPDATE free_game_stats
-        SET total_games = total_games + 1,
-            winning_games = winning_games + ?
-        WHERE game_type = ?
-        """,
-        (1 if is_win else 0, game_type)
-    )
-    cursor.execute(
-        "SELECT total_games, winning_games FROM free_game_stats WHERE game_type = ?",
-        (game_type,)
-    )
-    total_games, winning_games = cursor.fetchone()
-    conn.commit()
-    conn.close()
-    return total_games, winning_games
-
-def get_free_game_stats(game_type):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO free_game_stats (game_type) VALUES (?)", (game_type,))
-    cursor.execute(
-        "SELECT total_games, winning_games FROM free_game_stats WHERE game_type = ?",
-        (game_type,)
-    )
-    total_games, winning_games = cursor.fetchone()
-    conn.commit()
-    conn.close()
-    return total_games, winning_games
-
 def get_setting(key, default=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -414,6 +431,18 @@ def set_setting(key, value):
     conn.commit()
     conn.close()
 
+def parse_percent(value):
+    try:
+        percent = float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if percent < 0 or percent > 100:
+        return None
+    return percent
+
+def format_percent(value):
+    return f"{value:g}"
+
 def get_house_state(candidate_payout=0):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -434,18 +463,12 @@ def get_house_state(candidate_payout=0):
     payout_limit = int(total_added * PAYOUT_LIMIT_RATE)
     projected_paid = total_paid + int(candidate_payout or 0)
 
-    if payout_limit <= 0:
-        auto_mode = "normal"
-    elif projected_paid <= payout_limit:
-        auto_mode = "comert"
-    elif projected_paid <= int(payout_limit * 1.10):
-        auto_mode = "kisik"
-    else:
-        auto_mode = "koruma"
-
+    auto_mode = "normal"
     override_mode = get_setting("house_mode_override")
     if override_mode not in HOUSE_MODE_WEIGHTS:
         override_mode = None
+
+    forced_win_rate = parse_percent(get_setting("forced_win_rate"))
 
     mode = override_mode or auto_mode
     win_weight, loss_weight = HOUSE_MODE_WEIGHTS[mode]
@@ -462,18 +485,41 @@ def get_house_state(candidate_payout=0):
         "projected_paid": projected_paid,
         "win_weight": win_weight,
         "loss_weight": loss_weight,
+        "forced_win_rate": forced_win_rate,
     }
+
+def decide_forced_win(house_state):
+    forced_win_rate = house_state.get("forced_win_rate")
+    if forced_win_rate is None:
+        return None
+    if forced_win_rate >= 100:
+        return True
+    if forced_win_rate <= 0:
+        return False
+    return None
+
+def get_forced_weight_factor(house_state):
+    forced_win_rate = house_state.get("forced_win_rate")
+    if forced_win_rate is None or forced_win_rate <= 0 or forced_win_rate >= 100:
+        return 1.0
+    return forced_win_rate / (100 - forced_win_rate)
 
 def choose_roulette_outcome(selected_config, bet):
     candidate_payout = int(bet * selected_config["multiplier"])
     house_state = get_house_state(candidate_payout)
+    forced_win = decide_forced_win(house_state)
+    if forced_win is True:
+        return next(item for item in ROULETTE_OUTCOMES if item["label"] == selected_config["label"])
+    if forced_win is False:
+        losing_outcomes = [item for item in ROULETTE_OUTCOMES if item["label"] != selected_config["label"]]
+        return random.choices(losing_outcomes, weights=[item["chance"] for item in losing_outcomes], k=1)[0]
+
     weights = []
     for item in ROULETTE_OUTCOMES:
         weight = item["chance"]
+        forced_factor = get_forced_weight_factor(house_state)
         if item["label"] == selected_config["label"]:
-            weight *= house_state["win_weight"]
-        else:
-            weight *= house_state["loss_weight"]
+            weight *= forced_factor
         weights.append(weight)
     return random.choices(ROULETTE_OUTCOMES, weights=weights, k=1)[0]
 
@@ -481,14 +527,25 @@ def choose_horse_winner(selected_horse, bet):
     selected_multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
     candidate_payout = int(bet * selected_multiplier)
     house_state = get_house_state(candidate_payout)
+    forced_win = decide_forced_win(house_state)
+    if forced_win is True:
+        return selected_horse
+
     horses = list(HORSE_CONFIG.keys())
+    if forced_win is False:
+        losing_horses = [horse for horse in horses if horse != selected_horse]
+        return random.choices(
+            losing_horses,
+            weights=[HORSE_CONFIG[horse]["chance"] for horse in losing_horses],
+            k=1
+        )[0]
+
     weights = []
+    forced_factor = get_forced_weight_factor(house_state)
     for horse in horses:
         weight = HORSE_CONFIG[horse]["chance"]
         if horse == selected_horse:
-            weight *= house_state["win_weight"]
-        else:
-            weight *= house_state["loss_weight"]
+            weight *= forced_factor
         weights.append(weight)
     return random.choices(horses, weights=weights, k=1)[0]
 
@@ -501,32 +558,37 @@ def build_house_mode_text():
     usage_bar = "█" * bar_filled + "░" * (10 - bar_filled)
     mode = house_state["mode"]
     mode_info = {
-        "normal": ("⚪ NORMAL", "Henüz yeterli kasa verisi yok; oyunlar standart çalışıyor."),
-        "comert": ("🟢 CÖMERT", "Ödeme limiti rahat; rulet ve at yarışında kazanma tarafı hafif destekli."),
-        "kisik": ("🟡 KISIK", "Ödeme limiti aşıldı; kazanma ağırlığı düşürüldü ama oyun tamamen kapalı değil."),
-        "koruma": ("🔴 KORUMA", "Kasa limiti belirgin aşıldı; sistem daha sıkı koruma modunda."),
+        "normal": ("⚪ NORMAL", "Yüzdeli mod kapalı; oyunlar kendi normal ihtimaliyle çalışıyor."),
     }
     mode_label, mode_desc = mode_info.get(mode, (mode.upper(), "Mod bilgisi hesaplandı."))
-    control_text = (
-        f"Manuel mod aktif: **{mode_label}**"
-        if house_state["override_mode"]
-        else "Otomatik mod aktif"
-    )
-    auto_label = mode_info.get(house_state["auto_mode"], (house_state["auto_mode"].upper(), ""))[0]
-
+    control_text = "Yüzdeli mod kapalı"
+    forced_win_rate = house_state["forced_win_rate"]
+    if forced_win_rate is not None:
+        if forced_win_rate == 50:
+            control_text = "Yüzdeli mod aktif: **%50 normal ağırlık**"
+        elif forced_win_rate >= 100:
+            control_text = "Yüzdeli mod aktif: **%100 garanti kazanma**"
+        elif forced_win_rate <= 0:
+            control_text = "Yüzdeli mod aktif: **%100 garanti kaybetme**"
+        else:
+            control_text = (
+                f"Yüzdeli ağırlık aktif: **%{format_percent(forced_win_rate)} kazanma tarafı** "
+                f"| **%{format_percent(100 - forced_win_rate)} kaybetme tarafı**"
+            )
     return (
         f"🧭 **KASA MODU**\n\n"
         f"Durum: **{mode_label}**\n"
         f"{mode_desc}\n\n"
         f"🎛️ Kontrol: {control_text}\n"
-        f"🤖 Otomatik Hesap: **{auto_label}**\n\n"
+        f"🎯 Etkilenen oyunlar: **At Yarışı, Rulet, LCDP**\n"
+        f"🎲 Slot/Dart/Bowling: Telegram sonucu değişmediği için mod dışı\n\n"
         f"💰 Toplam Yatırılan: **{format_money(house_state['total_added'])}**\n"
         f"🎯 Ödeme Limiti (%80): **{format_money(payout_limit)}**\n"
         f"💸 Toplam Dağıtılan: **{format_money(total_paid)}**\n"
         f"📊 Limit Kullanımı: **%{limit_usage:.1f}**\n"
         f"`{usage_bar}`\n\n"
-        f"⚙️ Şu anki ağırlıklar: Kazanç x{house_state['win_weight']:.2f} | Kayıp x{house_state['loss_weight']:.2f}\n\n"
-        f"`/mod normal`, `/mod comert`, `/mod kisik`, `/mod koruma`, `/mod oto`"
+        f"`/mod normal` yüzdeli modu kapatır\n"
+        f"`/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35`"
     )
 
 # --- 4. OYUNCU KOMUTLARI VE OYUNLAR ---
@@ -546,8 +608,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Bahis]` -> Bowling topu fırlatır. 🎳\n"
         f"• `/atyarisi [Bahis] [At No]` -> At yarışı oynar. 🐎\n\n"
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
-        f"• `/olympos` -> Bahissiz Olympos oynar. 🏛️\n"
-        f"• `/olympos1` -> Olympos genel istatistiğini gösterir. 📊\n\n"
+        f"• `/lcdp [Bahis]` -> Bahisli LCDP oynar. 🏛️\n"
+        f"• `/lcdpfs [Miktar]` -> LCDP free spin satin alir. 🎁\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -581,7 +643,7 @@ async def play_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Slot animasyonu
     slot_result = await context.bot.send_dice(chat_id=chat_id, emoji="🎰", message_thread_id=thread_id)
     val = slot_result.dice.value
-       # Kazanma mantığı (Burada çarpanları kesin olarak ayırdık)
+    # Kazanma mantığı (Burada çarpanları kesin olarak ayırdık)
     win_amount = 0
     is_win = False
     result_text = ""
@@ -759,16 +821,31 @@ async def play_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_thread_id=thread_id
     )
 
-def render_olympos_grid(grid):
+def render_lcdp_grid(grid):
     return "\n".join(" ".join(row) for row in grid)
 
-def draw_olympos_grid():
+def draw_lcdp_grid():
     return [
-        [random.choice(OLYMPOS_SYMBOLS) for _ in range(6)]
+        [random.choices(LCDP_SYMBOLS, weights=LCDP_SYMBOL_WEIGHTS, k=1)[0] for _ in range(6)]
         for _ in range(5)
     ]
 
-def get_olympos_base_multiplier(match_count):
+def build_lcdp_loss_grid():
+    counts = [5, 5, 4, 4, 4, 4, 4, 2]
+    cells = []
+    for symbol, count in zip(LCDP_SYMBOLS, counts):
+        cells.extend([symbol] * count)
+    random.shuffle(cells)
+    return [cells[row * 6:(row + 1) * 6] for row in range(5)]
+
+def build_lcdp_win_grid():
+    cells = [random.choices(LCDP_SYMBOLS, weights=LCDP_SYMBOL_WEIGHTS, k=1)[0] for _ in range(30)]
+    winning_symbol = random.choices(LCDP_SYMBOLS, weights=LCDP_SYMBOL_WEIGHTS, k=1)[0]
+    for index in random.sample(range(30), 8):
+        cells[index] = winning_symbol
+    return [cells[row * 6:(row + 1) * 6] for row in range(5)]
+
+def get_lcdp_base_multiplier(match_count):
     if match_count >= 15:
         return 25
     if match_count >= 12:
@@ -779,83 +856,216 @@ def get_olympos_base_multiplier(match_count):
         return 1.5
     return 0
 
-async def play_olympos_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    remember_user(update.effective_user)
-    thread_id = update.message.message_thread_id if update.message else None
+def get_lcdp_symbol_multiplier(symbol, match_count):
+    paytable = LCDP_PAYTABLE.get(symbol, {})
+    multiplier = 0
+    for threshold, payout in sorted(paytable.items()):
+        if match_count >= threshold:
+            multiplier = payout
+    return multiplier
 
-    await update.message.reply_text("⚡ **OLYMPOS KAPILARI AÇILIYOR...** ⚡", parse_mode="Markdown", message_thread_id=thread_id)
-    for spin_text in ["☁️ Bulutlar dağılıyor...", "⚡ Çarpanlar yükseliyor...", "🏛️ Tanrılar sonucu seçiyor..."]:
-        await asyncio.sleep(0.45)
-        await update.message.reply_text(spin_text, message_thread_id=thread_id)
+def choose_lcdp_multiplier_from_table(multiplier_table, house_state=None):
+    weights = []
+    forced_factor = get_forced_weight_factor(house_state) if house_state else 1.0
+    for multiplier, chance in multiplier_table:
+        weight = chance
+        if house_state:
+            weight *= 1.0 if multiplier == 0 else forced_factor
+        weights.append(weight)
+    multipliers = [item[0] for item in multiplier_table]
+    return random.choices(multipliers, weights=weights, k=1)[0]
 
-    grid = draw_olympos_grid()
-    counts = {symbol: sum(row.count(symbol) for row in grid) for symbol in OLYMPOS_SYMBOLS}
-    best_symbol, best_count = max(counts.items(), key=lambda item: item[1])
-    base_multiplier = get_olympos_base_multiplier(best_count)
+def choose_lcdp_multiplier(house_state=None):
+    return choose_lcdp_multiplier_from_table(LCDP_MULTIPLIER_TABLE, house_state)
 
-    bonus_text = ""
-    total_multiplier = base_multiplier
-    if base_multiplier > 0 and random.randint(1, 100) <= 25:
-        bonus_multiplier = random.choice(OLYMPOS_MULTIPLIERS)
-        total_multiplier *= bonus_multiplier
-        bonus_text = f"\n⚡ **Bonus Çarpan:** x{bonus_multiplier}"
+def choose_lcdp_free_spin_multipliers(house_state=None):
+    extra_rolls = random.choices(
+        [item[0] for item in LCDP_FREE_SPIN_EXTRA_MULTIPLIER_ROLLS],
+        weights=[item[1] for item in LCDP_FREE_SPIN_EXTRA_MULTIPLIER_ROLLS],
+        k=1
+    )[0]
+    multipliers = []
+    for _ in range(1 + extra_rolls):
+        multiplier = choose_lcdp_multiplier_from_table(LCDP_FREE_SPIN_MULTIPLIER_TABLE, house_state)
+        if multiplier > 0:
+            multipliers.append(multiplier)
+    return multipliers
 
-    if total_multiplier > 0:
-        update_free_game_stats("olympos1", True)
-        result_text = (
-            f"🏛️ **OLYMPOS PATLADI!**\n"
-            f"En iyi sembol: {best_symbol} x{best_count}\n"
-            f"Sanal kazanç: **x{total_multiplier:g}**{bonus_text}\n"
-            f"_Bahissiz mod: bakiye değişmedi._"
+def evaluate_lcdp_spin(grid):
+    counts = {symbol: sum(row.count(symbol) for row in grid) for symbol in LCDP_SYMBOLS}
+    best_symbol, best_count = max(
+        counts.items(),
+        key=lambda item: get_lcdp_symbol_multiplier(item[0], item[1])
+    )
+    base_multiplier = get_lcdp_symbol_multiplier(best_symbol, best_count)
+    scatter_count = counts.get(LCDP_FREE_SPIN_SYMBOL, 0)
+    return best_symbol, best_count, base_multiplier, scatter_count
+
+def draw_lcdp_grid_for_result(forced_win=None):
+    if forced_win is None:
+        return draw_lcdp_grid()
+
+    for _ in range(100):
+        grid = draw_lcdp_grid()
+        _, _, base_multiplier, scatter_count = evaluate_lcdp_spin(grid)
+        is_win_grid = base_multiplier > 0
+        if forced_win and is_win_grid:
+            return grid
+        if not forced_win and not is_win_grid and scatter_count < LCDP_FREE_SPIN_TRIGGER_COUNT:
+            return grid
+
+    return build_lcdp_win_grid() if forced_win else build_lcdp_loss_grid()
+
+def format_lcdp_multiplier(multiplier):
+    return "yok" if multiplier == 0 else f"x{multiplier:g}"
+
+def format_lcdp_multipliers(multipliers):
+    return "yok" if not multipliers else " + ".join(f"x{multiplier:g}" for multiplier in multipliers)
+
+def run_lcdp_free_spins(bet, house_state, forced_result=None):
+    accumulated_multiplier = 0
+    free_spin_total = 0
+    free_spin_lines = []
+
+    for spin_no in range(1, LCDP_FREE_SPIN_COUNT + 1):
+        spin_forced_result = forced_result if spin_no == 1 else (False if forced_result is False else None)
+        free_grid = draw_lcdp_grid_for_result(spin_forced_result)
+        fs_symbol, fs_count, fs_base_multiplier, _ = evaluate_lcdp_spin(free_grid)
+        fs_multipliers = [] if forced_result is False else choose_lcdp_free_spin_multipliers(house_state)
+        accumulated_multiplier += sum(fs_multipliers)
+        fs_paid_multiplier = fs_base_multiplier * (accumulated_multiplier if accumulated_multiplier > 0 else 1)
+        fs_win = int(bet * fs_paid_multiplier) if fs_paid_multiplier > 0 else 0
+        free_spin_total += fs_win
+        free_spin_lines.append(
+            f"{spin_no}. spin: {fs_symbol} x{fs_count} | carpanlar {format_lcdp_multipliers(fs_multipliers)} | biriken x{accumulated_multiplier:g} | +{format_money(fs_win)}"
         )
+
+    return free_spin_total, free_spin_lines
+
+async def play_lcdp(update: Update, context: ContextTypes.DEFAULT_TYPE, force_free_spin_buy=False):
+    user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    if not await check_game_cooldown(update):
+        return
+    thread_id = update.message.message_thread_id if update.message else None
+    args = context.args or (update.message.text.split()[1:] if update.message and update.message.text else [])
+
+    normalized_args = [arg.lower().strip() for arg in args]
+    buy_mode = force_free_spin_buy or any(arg in LCDP_FREE_SPIN_BUY_ALIASES for arg in normalized_args)
+    bet_arg = next((arg for arg in args if parse_money(arg) is not None), None)
+
+    if not bet_arg:
+        await update.message.reply_text(
+            f"❌ **Kullanim:** `/lcdp [Miktar]`\n"
+            f"Free spin satin alma: `/lcdp [Miktar] freespin` veya `/lcdpfs [Miktar]`\n"
+            f"Normal oyun: {format_money(MIN_BET_LCDP)} - {format_money(MAX_BET_LCDP)}\n"
+            f"Free spin satin alma: {format_money(MIN_LCDP_FREE_SPIN_BUY)} - {format_money(MAX_LCDP_FREE_SPIN_BUY)}\n"
+            f"Free spinlerde ayni turda birden fazla carpan gelebilir ve carpan ihtimali daha yuksektir.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    amount = parse_money(bet_arg)
+    if amount is None:
+        await update.message.reply_text("❌ Gecersiz miktar!", parse_mode="Markdown", message_thread_id=thread_id)
+        return
+
+    if buy_mode:
+        if amount < MIN_LCDP_FREE_SPIN_BUY or amount > MAX_LCDP_FREE_SPIN_BUY:
+            await update.message.reply_text(
+                f"❌ Gecersiz free spin satin alma tutari! **{format_money(MIN_LCDP_FREE_SPIN_BUY)}** ile **{format_money(MAX_LCDP_FREE_SPIN_BUY)}** arasinda secmelisin.",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+            return
+        charge_amount = amount
+        bet = max(1, charge_amount // LCDP_FREE_SPIN_BUY_MULTIPLIER)
     else:
-        update_free_game_stats("olympos1", False)
-        result_text = (
-            f"🌫️ **Olympos sessiz kaldı.**\n"
-            f"En iyi sembol: {best_symbol} x{best_count}\n"
-            f"Kazanç için en az 8 aynı sembol gerekiyordu.\n"
-            f"_Bahissiz mod: bakiye değişmedi._"
+        bet = amount
+        if bet < MIN_BET_LCDP or bet > MAX_BET_LCDP:
+            await update.message.reply_text(
+                f"❌ Gecersiz bahis! LCDP icin **{format_money(MIN_BET_LCDP)}** ile **{format_money(MAX_BET_LCDP)}** arasinda oynayabilirsin.",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+            return
+        charge_amount = bet
+
+    if get_balance(user_id) < charge_amount:
+        await update.message.reply_text(
+            f"❌ **Bakiyen yetersiz!** Gereken: {format_money(charge_amount)} Cip",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
         )
+        return
+
+    update_balance(user_id, -charge_amount)
+
+    if buy_mode:
+        house_state = get_house_state()
+        forced_result = decide_forced_win(house_state)
+        free_spin_total, free_spin_lines = run_lcdp_free_spins(bet, house_state, forced_result)
+        is_win = free_spin_total > 0
+        update_game_stats('lcdp', charge_amount, free_spin_total, is_win, user_id)
+        new_balance = update_balance(user_id, free_spin_total)
+        result_header = "🏛️ **FREE SPIN KAZANDIRDI!**" if is_win else "🌫️ **Free spin sessiz kaldi.**"
+
+        await update.message.reply_text(
+            f"{result_header}\n"
+            f"Satın alma tutari: **{format_money(charge_amount)}**\n"
+            f"Spin degeri: **{format_money(bet)}**\n"
+            f"Spin kazanci: **{format_money(free_spin_total)}**\n\n"
+            f"{chr(10).join(free_spin_lines)}\n\n"
+            f"Toplam kazanc: **{format_money(free_spin_total)}**\n"
+            f"💳 Guncel Bakiyen: **{format_money(new_balance)}** Cip",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    house_state = get_house_state()
+    forced_result = decide_forced_win(house_state)
+    grid = draw_lcdp_grid_for_result(forced_result)
+    best_symbol, best_count, base_multiplier, scatter_count = evaluate_lcdp_spin(grid)
+    hand_multiplier = 0 if forced_result is False else choose_lcdp_multiplier(house_state)
+    paid_multiplier = base_multiplier * (hand_multiplier if hand_multiplier > 0 else 1)
+    main_win = int(bet * paid_multiplier) if paid_multiplier > 0 else 0
+    free_spin_total = 0
+    free_spin_lines = []
+
+    if scatter_count >= LCDP_FREE_SPIN_TRIGGER_COUNT:
+        free_spin_lines.append(f"\n🎁 **FREE SPIN:** {scatter_count} scatter ile {LCDP_FREE_SPIN_COUNT} spin acildi!")
+        free_spin_total, triggered_free_spin_lines = run_lcdp_free_spins(bet, house_state, forced_result)
+        free_spin_lines.extend(triggered_free_spin_lines)
+
+    total_win = main_win + free_spin_total
+    is_win = total_win > 0
+    update_game_stats('lcdp', bet, total_win, is_win, user_id)
+    new_balance = update_balance(user_id, total_win)
+    result_header = "🏛️ **LCDP KAZANDIRDI!**" if is_win else "🌫️ **LCDP sessiz kaldi.**"
+    free_text = "\n".join(free_spin_lines)
+
+    result_text = (
+        f"{result_header}\n"
+        f"En iyi sembol: {best_symbol} x{best_count}\n"
+        f"Sembol odemesi: **x{base_multiplier:g}**\n"
+        f"El carpani: **{format_lcdp_multiplier(hand_multiplier)}**\n"
+        f"Ana el kazanci: **{format_money(main_win)}**\n"
+        f"Free spin kazanci: **{format_money(free_spin_total)}**"
+        f"{free_text}\n\n"
+        f"Toplam kazanc: **{format_money(total_win)}**\n"
+        f"💳 Guncel Bakiyen: **{format_money(new_balance)}** Cip"
+    )
 
     await update.message.reply_text(
-        f"```\n{render_olympos_grid(grid)}\n```\n{result_text}",
+        f"```\n{render_lcdp_grid(grid)}\n```\n{result_text}",
         parse_mode="Markdown",
         message_thread_id=thread_id
     )
 
-async def olympوس_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    remember_user(update.effective_user)
-    thread_id = update.message.message_thread_id if update.message else None
-    total_games, winning_games = get_free_game_stats("olympos1")
-    losing_games = total_games - winning_games
-    win_rate = (winning_games / total_games * 100) if total_games else 0
-
-    await update.message.reply_text(
-        f"📊 **OLYMPOS GENEL İSTATİSTİK**\n\n"
-        f"Toplam Oyun: **{total_games}**\n"
-        f"Kazandı/Kaybetti: **{winning_games}/{losing_games}**\n"
-        f"Kazanma Oranı: **%{win_rate:.1f}**\n\n"
-        f"_Bu istatistik bahissiz Olympos içindir; kasa paneline dahil değildir._",
-        parse_mode="Markdown",
-        message_thread_id=thread_id
-    )
-
-async def olympus_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    remember_user(update.effective_user)
-    thread_id = update.message.message_thread_id if update.message else None
-    total_games, winning_games = get_free_game_stats("olympos1")
-    losing_games = total_games - winning_games
-    win_rate = (winning_games / total_games * 100) if total_games else 0
-
-    await update.message.reply_text(
-        f"📊 **OLYMPOS GENEL İSTATİSTİK**\n\n"
-        f"Toplam Oyun: **{total_games}**\n"
-        f"Kazandı/Kaybetti: **{winning_games}/{losing_games}**\n"
-        f"Kazanma Oranı: **%{win_rate:.1f}**\n\n"
-        f"_Bu istatistik bahissiz Olympos içindir; kasa paneline dahil değildir._",
-        parse_mode="Markdown",
-        message_thread_id=thread_id
-    )
+async def buy_lcdp_free_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await play_lcdp(update, context, force_free_spin_buy=True)
 
 def render_horse_race(positions):
     lines = []
@@ -864,12 +1074,6 @@ def render_horse_race(positions):
         track = "." * pos + "H" + "." * (HORSE_FINISH_LINE - pos) + "|"
         lines.append(f"{horse}: {track}")
     return "\n".join(lines)
-
-def format_horse_options():
-    return "\n".join(
-        f"{horse}. At: %{config['chance']} | x{config['multiplier']:g}"
-        for horse, config in HORSE_CONFIG.items()
-    )
 
 async def safe_edit_race_message(message, text):
     try:
@@ -920,8 +1124,7 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ **Kullanım:** `/atyarisi [Miktar] [At No]`\n"
             f"📌 Örnek: `/atyarisi 10t 3`\n"
-            f"Min: {format_money(MIN_BET_HORSE)} | Max: {format_money(MAX_BET_HORSE)} | At: 1-8\n\n"
-            f"🎯 **Oranlar ve Çarpanlar:**\n{format_horse_options()}",
+            f"Min: {format_money(MIN_BET_HORSE)} | Max: {format_money(MAX_BET_HORSE)} | At: 1-8",
             parse_mode="Markdown",
             message_thread_id=thread_id
         )
@@ -1016,6 +1219,172 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_thread_id=thread_id
             )
 
+def build_progress_bar(current, total, width=20):
+    filled = int((current / total) * width) if total else width
+    return "█" * filled + "░" * (width - filled)
+
+def get_forced_mode_label():
+    forced_win_rate = get_house_state().get("forced_win_rate")
+    if forced_win_rate is None:
+        return "Kapalı"
+    if forced_win_rate == 50:
+        return "%50 normal ağırlık"
+    if forced_win_rate >= 100:
+        return "%100 garanti kazan"
+    if forced_win_rate <= 0:
+        return "%100 garanti kaybet"
+    return f"%{format_percent(forced_win_rate)} kazan ağırlığı / %{format_percent(100 - forced_win_rate)} kayıp ağırlığı"
+
+def simulate_slot_round(bet):
+    val = random.randint(1, 64)
+    if val == 64:
+        return bet * 24
+    if val in [1, 22, 43]:
+        return int(bet * 7.5)
+    return 0
+
+def simulate_dart_round(bet):
+    return bet * 4 if random.randint(1, 6) == 6 else 0
+
+def simulate_bowling_round(bet):
+    return bet * 5 if random.randint(1, 6) == 6 else 0
+
+def simulate_lcdp_round(bet):
+    house_state = get_house_state()
+    forced_result = decide_forced_win(house_state)
+    grid = draw_lcdp_grid_for_result(forced_result)
+    _, _, base_multiplier, scatter_count = evaluate_lcdp_spin(grid)
+    hand_multiplier = 0 if forced_result is False else choose_lcdp_multiplier(house_state)
+    paid_multiplier = base_multiplier * (hand_multiplier if hand_multiplier > 0 else 1)
+    paid = int(bet * paid_multiplier) if paid_multiplier > 0 else 0
+
+    if scatter_count >= LCDP_FREE_SPIN_TRIGGER_COUNT:
+        free_paid, _ = run_lcdp_free_spins(bet, house_state, forced_result)
+        paid += free_paid
+
+    return paid
+
+def simulate_roulette_round(bet):
+    selected_key = random.choice(["kirmizi", "siyah", "yesil"])
+    selected_config = ROULETTE_CONFIG[selected_key]
+    outcome = choose_roulette_outcome(selected_config, bet)
+    is_win = outcome["label"] == selected_config["label"]
+    return int(bet * selected_config["multiplier"]) if is_win else 0
+
+def simulate_horse_round(bet):
+    selected_horse = random.choice(list(HORSE_CONFIG.keys()))
+    winner = choose_horse_winner(selected_horse, bet)
+    return int(bet * HORSE_CONFIG[selected_horse]["multiplier"]) if winner == selected_horse else 0
+
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    total_games = 1000
+    bet = MIN_BET_LCDP
+    games = ACTIVE_GAME_TYPES
+    requested_game = context.args[0].lower().strip() if context.args else "all"
+    selected_game = TEST_GAME_ALIASES.get(requested_game)
+    if selected_game is None:
+        await update.message.reply_text(
+            "❌ Kullanım: `/test` veya `/test [slot/dart/bowling/atyarisi/rulet/lcdp]`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+    if selected_game != "all":
+        games = [selected_game]
+
+    stats = {
+        game: {"games": 0, "wins": 0, "wagered": 0, "paid": 0}
+        for game in games
+    }
+
+    progress_message = await update.message.reply_text(
+        f"🧪 **Test başladı**\n`{build_progress_bar(0, total_games)}` %0",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+    for index in range(1, total_games + 1):
+        game_type = games[(index - 1) % len(games)]
+        if game_type == "slot":
+            paid = simulate_slot_round(bet)
+        elif game_type == "dart":
+            paid = simulate_dart_round(bet)
+        elif game_type == "bowling":
+            paid = simulate_bowling_round(bet)
+        elif game_type == "lcdp":
+            paid = simulate_lcdp_round(bet)
+        elif game_type == "atyarisi":
+            paid = simulate_horse_round(bet)
+        else:
+            paid = simulate_roulette_round(bet)
+
+        stats[game_type]["games"] += 1
+        stats[game_type]["wins"] += 1 if paid > 0 else 0
+        stats[game_type]["wagered"] += bet
+        stats[game_type]["paid"] += paid
+
+        if index % 100 == 0 or index == total_games:
+            percent = int(index / total_games * 100)
+            try:
+                await progress_message.edit_text(
+                    f"🧪 **Test çalışıyor**\n`{build_progress_bar(index, total_games)}` %{percent}",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(0)
+
+    total_wins = sum(item["wins"] for item in stats.values())
+    total_wagered = sum(item["wagered"] for item in stats.values())
+    total_paid = sum(item["paid"] for item in stats.values())
+    total_losses = total_games - total_wins
+    win_rate = (total_wins / total_games * 100) if total_games else 0
+    rtp = (total_paid / total_wagered * 100) if total_wagered else 0
+    net = total_wagered - total_paid
+
+    detail_lines = []
+    labels = {
+        "slot": "SLOT",
+        "dart": "DART",
+        "bowling": "BOWLING",
+        "atyarisi": "AT YARIŞI",
+        "roulette": "RULET",
+        "lcdp": "LCDP",
+    }
+    for game_type in games:
+        item = stats[game_type]
+        game_win_rate = (item["wins"] / item["games"] * 100) if item["games"] else 0
+        game_rtp = (item["paid"] / item["wagered"] * 100) if item["wagered"] else 0
+        detail_lines.append(
+            f"• **{labels[game_type]}:** {item['wins']}/{item['games'] - item['wins']} | Win %{game_win_rate:.1f} | RTP %{game_rtp:.1f}"
+        )
+
+    final_text = (
+        f"🧪 **TEST TAMAMLANDI**\n"
+        f"`{build_progress_bar(total_games, total_games)}` %100\n\n"
+        f"Yüzdeli Mod: **{get_forced_mode_label()}**\n"
+        f"Oyun: **{'TÜMÜ' if selected_game == 'all' else labels[selected_game]}**\n"
+        f"Simülasyon: **{total_games} oyun**\n"
+        f"Bahis: **{format_money(bet)}**\n\n"
+        f"Kazandı/Kaybetti: **{total_wins}/{total_losses}**\n"
+        f"Win Rate: **%{win_rate:.1f}**\n"
+        f"Toplam Dönen: **{format_money(total_wagered)}**\n"
+        f"Toplam Ödenen: **{format_money(total_paid)}**\n"
+        f"Kasa Net: **{format_money(net)}**\n"
+        f"RTP: **%{rtp:.1f}**\n\n"
+        f"{chr(10).join(detail_lines)}\n\n"
+        f"_Gerçek bakiye ve panel verilerine işlenmedi._"
+    )
+
+    try:
+        await progress_message.edit_text(final_text, parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(final_text, parse_mode="Markdown", message_thread_id=thread_id)
+
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update.effective_user)
     thread_id = update.message.message_thread_id if update.message else None
@@ -1109,13 +1478,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/bowling [Miktar]` (Min {format_money(MIN_BET_DART_BOWL)} | Max {format_money(MAX_BET_DART_BOWL)})\n"
         f"• `/atyarisi [Miktar] [At No]` (Min {format_money(MIN_BET_HORSE)} | Max {format_money(MAX_BET_HORSE)} | At: 1-8)\n\n"
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
-        f"• `/olympos` - Bahissiz çarpanlı Olympos eğlence modu\n"
-        f"• `/olympos1` - Herkesin Olympos genel istatistiğini gösterir\n\n"
+        f"• `/lcdp [Miktar]` (Min {format_money(MIN_BET_LCDP)} | Max {format_money(MAX_BET_LCDP)})\n"
+        f"• `/lcdp [Miktar] freespin` veya `/lcdpfs [Miktar]` (Min {format_money(MIN_LCDP_FREE_SPIN_BUY)} | Max {format_money(MAX_LCDP_FREE_SPIN_BUY)})\n\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
         f"• `/top10` - En zengin 10 oyuncuyu listeler\n"
-        f"• `/bilgi` - Kendi oyun ve bakiye istatistiklerini gösterir\n"
+        f"• `/bilgi` - Kendi oyun ve bakiye bilgilerini gösterir\n"
         f"• `/transfer [ID/@kullanıcı] [Miktar]` - Başka kullanıcıya çip gönderir\n"
     )
     
@@ -1124,10 +1493,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"\n⚡ **[ADMİN ÖZEL] Yönetim Komutları:**\n"
             f"• `/bakiyeekle [ID/Yanıt] [Miktar]`\n"
             f"• `/bakiyesil [ID/Yanıt] [Miktar]`\n"
-            f"• `/panel` - Kasa istatistiklerini ve oyun bazlı verileri gösterir\n"
-            f"• `/mod [normal/comert/kisik/koruma/oto]` - Kasa modunu gösterir veya değiştirir\n"
-            f"• `/bilgi [ID/@kullanıcı]` - Başka kullanıcıların istatistiklerini gösterir\n"
-            f"• `/panelsifirla` - Kasa istatistiklerini temizler\n"
+            f"• `/panel` - Kasa ve oyun verilerini gösterir\n"
+            f"• `/mod normal` - Yüzdeli modu kapatır\n"
+            f"• `/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35` - Yüzdeli test modunu ayarlar\n"
+            f"• `/test [oyun]` - 1000 oyun simülasyonu yapar\n"
+            f"• `/bilgi [ID/@kullanıcı]` - Başka kullanıcıların bilgilerini gösterir\n"
+            f"• `/panelsifirla` - Kasa geçmişini temizler\n"
             f"• `/bakim ac|kapat|durum` - Bot bakım modunu yönetir\n"
             f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
         )
@@ -1174,19 +1545,42 @@ async def house_mode_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message else None
     if context.args:
         requested_mode = context.args[0].lower().strip()
-        mode = HOUSE_MODE_ALIASES.get(requested_mode)
-        if mode is None:
+        forced_action = FORCED_MODE_ALIASES.get(requested_mode)
+        if forced_action:
+            if len(context.args) < 2:
+                await update.message.reply_text(
+                    "❌ Kullanım: `/mod kazan 80`, `/mod kaybet 80` veya `/mod oran 35`",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
+                return
+
+            requested_percent = parse_percent(context.args[1])
+            if requested_percent is None:
+                await update.message.reply_text("❌ Yüzde 0 ile 100 arasında olmalı.", message_thread_id=thread_id)
+                return
+
+            forced_win_rate = 100 - requested_percent if forced_action == "lose" else requested_percent
+            set_setting("forced_win_rate", format_percent(forced_win_rate))
+            set_setting("house_mode_override", None)
             await update.message.reply_text(
-                "❌ Kullanım: `/mod normal`, `/mod comert`, `/mod kisik`, `/mod koruma` veya `/mod oto`",
+                build_house_mode_text(),
                 parse_mode="Markdown",
                 message_thread_id=thread_id
             )
             return
 
-        if mode == "auto":
-            set_setting("house_mode_override", None)
-        else:
-            set_setting("house_mode_override", mode)
+        mode = HOUSE_MODE_ALIASES.get(requested_mode)
+        if mode is None:
+            await update.message.reply_text(
+                "❌ Kullanım: `/mod normal`, `/mod kazan 80`, `/mod kaybet 80` veya `/mod oran 35`",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+            return
+
+        set_setting("house_mode_override", None)
+        set_setting("forced_win_rate", None)
 
     await update.message.reply_text(
         build_house_mode_text(),
@@ -1308,7 +1702,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_net = g_wag - g_paid
         g_loss = g_total - g_win
         
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡"}.get(g_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️"}.get(g_type, "🎮")
         
         panel_text += (
             f"{icon} **{g_type.upper()} İSTATİSTİKLERİ:**\n"
@@ -1390,7 +1784,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         win_rate = (wins / games * 100) if games else 0
         losses = games - wins
         net = wagered - paid
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡"}.get(game_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️"}.get(game_type, "🎮")
         detail_text += (
             f"{icon} **{game_type.upper()}**\n"
             f"Oyun: {games} | Kazandı/Kaybetti: {wins}/{losses} | Kazanç: %{win_rate:.1f}\n"
@@ -1478,14 +1872,17 @@ async def main():
     application.add_handler(CommandHandler("bowling", play_bowling))
     application.add_handler(CommandHandler("atyarisi", play_horse_race))
     application.add_handler(CommandHandler("rulet", play_roulette))
-    application.add_handler(CommandHandler("olympos", play_olympos_free))
-    application.add_handler(CommandHandler("olympos1", olympus_stats))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)^olympos$"), play_olympos_free))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)^olympos1$"), olympus_stats))
+    application.add_handler(CommandHandler("lcdp", play_lcdp))
+    application.add_handler(CommandHandler("lcdpfs", buy_lcdp_free_spin))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdp$"), play_lcdp))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdp\s+\S+"), play_lcdp))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdpfs$"), buy_lcdp_free_spin))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdpfs\s+\S+"), buy_lcdp_free_spin))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("transfer", transfer_command))
     application.add_handler(CommandHandler("komut", help_command))
+    application.add_handler(CommandHandler("test", test_command))
     
     # Admin Komutları
     application.add_handler(CommandHandler("bakiyeekle", add_balance_admin))
