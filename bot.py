@@ -5,8 +5,8 @@ import random
 import os
 import time
 from pathlib import Path
-from telegram import Update
-from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 # Sarı renkli Python 3.12+ Deprecation uyarılarını gizler
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -82,6 +82,8 @@ MIN_BET_ROULETTE = parse_money("25t")
 MAX_BET_ROULETTE = parse_money("250t")
 MIN_BET_LCDP = parse_money("25t")
 MAX_BET_LCDP = parse_money("250t")
+MIN_BET_AVIATOR = parse_money("10t")
+MAX_BET_AVIATOR = parse_money("50t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
     2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
@@ -152,7 +154,38 @@ LCDP_FREE_SPIN_BUY_MULTIPLIER = 100
 MIN_LCDP_FREE_SPIN_BUY = parse_money("100t")
 MAX_LCDP_FREE_SPIN_BUY = parse_money("1kt")
 LCDP_FREE_SPIN_BUY_ALIASES = {"freespin", "free", "fs", "satinal", "satınal", "satın", "satin"}
-ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette', 'lcdp']
+AVIATOR_HOUSE_EDGE = 0.02
+AVIATOR_MAX_MULTIPLIER = 200.0
+AVIATOR_MAX_AUTO_CASHOUT = 200.0
+AVIATOR_TICK_SECONDS = 0.75
+AVIATOR_MAX_TICKS = 90
+AVIATOR_DISPLAY_UPDATE_SECONDS = 2.0
+AVIATOR_CRASH_SYNC_DELAY_SECONDS = 2.0
+AVIATOR_CHAT_ID = -1004258892386
+AVIATOR_TOPIC_ID = 2
+AVIATOR_ALLOWED_TOPICS = [
+    (AVIATOR_CHAT_ID, AVIATOR_TOPIC_ID),
+    (-1003294364148, 192915),
+]
+AVIATOR_MAX_PLAYERS_PER_ROUND = 25
+AVIATOR_CRASH_RANGES = [
+    (24, 0.00, 1.00),
+    (30, 1.01, 1.30),
+    (24, 1.31, 2.00),
+    (11, 2.01, 4.00),
+    (6, 4.01, 10.00),
+    (4, 10.01, 25.00),
+    (0.5, 25.01, 99.99),
+    (0.3, 100.00, 112.99),
+    (0.1, 113.00, 180.99),
+    (0.1, 181.00, 200.00),
+]
+AVIATOR_PENDING_BETS = {}
+AVIATOR_CURRENT_ROUND = None
+AVIATOR_LAST_STARTED_MINUTE = None
+AVIATOR_FORCED_CRASHES_SETTING = "aviator_forced_crashes"
+AVIATOR_PROMO_SETTING = "aviator_promo"
+ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette', 'lcdp', 'aviator']
 TEST_GAME_ALIASES = {
     "all": "all",
     "hepsi": "all",
@@ -167,6 +200,10 @@ TEST_GAME_ALIASES = {
     "rulet": "roulette",
     "roulette": "roulette",
     "lcdp": "lcdp",
+    "aviator": "aviator",
+    "av": "aviator",
+    "ucak": "aviator",
+    "uÃ§ak": "aviator",
 }
 HOUSE_MODE_WEIGHTS = {
     "normal": (1.0, 1.0),
@@ -251,6 +288,65 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS credit_requests (
+            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_at INTEGER NOT NULL,
+            decided_at INTEGER,
+            decided_by INTEGER,
+            paid INTEGER DEFAULT 0,
+            paid_at INTEGER,
+            paid_marked_by INTEGER,
+            deleted_at INTEGER,
+            deleted_by INTEGER
+        )
+    """)
+    for column_name, column_type in [
+        ("paid", "INTEGER DEFAULT 0"),
+        ("paid_at", "INTEGER"),
+        ("paid_marked_by", "INTEGER"),
+        ("deleted_at", "INTEGER"),
+        ("deleted_by", "INTEGER"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE credit_requests ADD COLUMN {column_name} {column_type}")
+        except sqlite3.OperationalError:
+            pass
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS aviator_rounds (
+            round_id INTEGER PRIMARY KEY,
+            crash_multiplier REAL NOT NULL,
+            status TEXT NOT NULL,
+            mode TEXT DEFAULT 'normal',
+            total_bet INTEGER DEFAULT 0,
+            paid_total INTEGER DEFAULT 0,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            voided_at INTEGER,
+            voided_by INTEGER,
+            refunded_total INTEGER DEFAULT 0
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS aviator_round_bets (
+            round_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            label TEXT,
+            bet INTEGER NOT NULL,
+            paid INTEGER DEFAULT 0,
+            cashout_multiplier REAL,
+            resolved INTEGER DEFAULT 0,
+            refunded INTEGER DEFAULT 0,
+            refund_amount INTEGER DEFAULT 0,
+            PRIMARY KEY (round_id, user_id)
         )
     """)
     
@@ -610,6 +706,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
         f"• `/lcdp [Bahis]` -> Bahisli LCDP oynar. 🏛️\n"
         f"• `/lcdpfs [Miktar]` -> LCDP free spin satin alir. 🎁\n\n"
+        f"• `/aviator [Bahis] [Oto Çıkış]` -> Dakika başı ortak Aviator turuna katılır. ✈️\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -1112,7 +1209,1188 @@ async def safe_send_message(context, chat_id, text, parse_mode=None, message_thr
     except Exception:
         return None
 
+async def safe_query_answer(query, text=None, show_alert=False, timeout=1.0):
+    try:
+        await asyncio.wait_for(
+            query.answer(text=text, show_alert=show_alert),
+            timeout=timeout
+        )
+    except Exception:
+        pass
+
+async def safe_delete_message(message, timeout=1.0):
+    try:
+        await asyncio.wait_for(message.delete(), timeout=timeout)
+    except Exception:
+        pass
+
+async def send_admin_private_notice(context, admin_id, text, parse_mode=None):
+    return await safe_send_message(context, admin_id, text, parse_mode=parse_mode)
+
+async def send_all_admin_private_notices(context, text, parse_mode=None):
+    sent_count = 0
+    for admin_id in ADMIN_IDS:
+        sent_message = await send_admin_private_notice(context, admin_id, text, parse_mode=parse_mode)
+        if sent_message is not None:
+            sent_count += 1
+    return sent_count
+
+def split_telegram_text(text, limit=3800):
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n", 0, limit)
+        if split_at <= 0:
+            split_at = limit
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
 # 🐎 AT YARIŞI OYUNU
+def parse_aviator_cashout_arg(value):
+    if value is None:
+        return None
+    normalized = str(value).lower().strip().replace(",", ".").replace("x", "")
+    try:
+        multiplier = float(normalized)
+    except ValueError:
+        return None
+    if multiplier < 1.01 or multiplier > AVIATOR_MAX_AUTO_CASHOUT:
+        return None
+    return round(multiplier, 2)
+
+def format_aviator_multiplier(multiplier):
+    return f"x{multiplier:.2f}"
+
+def get_aviator_topic_key(update_or_message):
+    message = getattr(update_or_message, "message", None) or getattr(update_or_message, "effective_message", None) or update_or_message
+    chat = getattr(message, "chat", None)
+    if chat is None:
+        return None
+    return chat.id, getattr(message, "message_thread_id", None)
+
+def is_aviator_topic(update_or_message):
+    return get_aviator_topic_key(update_or_message) in AVIATOR_ALLOWED_TOPICS
+
+def get_aviator_pending_topic_key():
+    if not AVIATOR_PENDING_BETS:
+        return None
+    first_bet = next(iter(AVIATOR_PENDING_BETS.values()))
+    return first_bet.get("chat_id", AVIATOR_CHAT_ID), first_bet.get("thread_id", AVIATOR_TOPIC_ID)
+
+def get_aviator_next_start_seconds():
+    seconds = time.localtime().tm_sec
+    return 60 - seconds if seconds else 60
+
+def get_aviator_pending_total():
+    return sum(item["bet"] for item in AVIATOR_PENDING_BETS.values())
+
+def get_aviator_user_label(user):
+    if user.username:
+        return f"@{user.username}"
+    full_name = " ".join(part for part in [user.first_name, user.last_name] if part)
+    return full_name or str(user.id)
+
+def parse_aviator_multiplier_value(value, min_value=0.0, max_value=None):
+    max_value = AVIATOR_MAX_MULTIPLIER if max_value is None else max_value
+    normalized = str(value).lower().strip().replace(",", ".").replace("x", "")
+    try:
+        multiplier = float(normalized)
+    except (TypeError, ValueError):
+        return None
+    if multiplier < min_value or multiplier > max_value:
+        return None
+    return round(multiplier, 2)
+
+def split_aviator_multiplier_args(args):
+    values = []
+    for arg in args:
+        normalized = str(arg).replace(";", ",").replace("|", ",")
+        for part in normalized.split(","):
+            part = part.strip()
+            if part:
+                values.append(part)
+    return values
+
+def format_aviator_sequence(values, limit=12):
+    if not values:
+        return "bos"
+    visible = [format_aviator_multiplier(value) for value in values[:limit]]
+    if len(values) > limit:
+        visible.append(f"+{len(values) - limit} daha")
+    return ", ".join(visible)
+
+def get_aviator_forced_crashes():
+    raw = get_setting(AVIATOR_FORCED_CRASHES_SETTING, "") or ""
+    values = []
+    for item in raw.split(","):
+        multiplier = parse_aviator_multiplier_value(item)
+        if multiplier is not None:
+            values.append(multiplier)
+    return values
+
+def set_aviator_forced_crashes(values):
+    if not values:
+        set_setting(AVIATOR_FORCED_CRASHES_SETTING, None)
+        return
+    set_setting(AVIATOR_FORCED_CRASHES_SETTING, ",".join(f"{value:.2f}" for value in values))
+
+def pop_aviator_forced_crash():
+    values = get_aviator_forced_crashes()
+    if not values:
+        return None
+    value = values.pop(0)
+    set_aviator_forced_crashes(values)
+    return value
+
+def get_aviator_promo():
+    raw = get_setting(AVIATOR_PROMO_SETTING, "") or ""
+    if not raw:
+        return None
+    try:
+        min_text, count_text = raw.split(",", 1)
+        min_crash = parse_aviator_multiplier_value(min_text, min_value=1.0)
+        count = int(count_text)
+    except (ValueError, TypeError):
+        return None
+    if min_crash is None or count <= 0:
+        return None
+    return min_crash, count
+
+def set_aviator_promo(min_crash=None, count=0):
+    if min_crash is None or count <= 0:
+        set_setting(AVIATOR_PROMO_SETTING, None)
+        return
+    set_setting(AVIATOR_PROMO_SETTING, f"{min_crash:.2f},{int(count)}")
+
+def consume_aviator_promo():
+    promo = get_aviator_promo()
+    if promo is None:
+        return None
+    min_crash, count = promo
+    set_aviator_promo(min_crash, count - 1)
+    return min_crash
+
+def choose_aviator_crash_multiplier(auto_cashout=None, bets=None):
+    _, low, high = random.choices(
+        AVIATOR_CRASH_RANGES,
+        weights=[item[0] for item in AVIATOR_CRASH_RANGES],
+        k=1
+    )[0]
+    if low == high:
+        return low
+
+    low_cents = int(round(low * 100))
+    high_cents = int(round(high * 100))
+    return random.randint(low_cents, high_cents) / 100
+
+def choose_aviator_round_crash_multiplier():
+    forced_crash = pop_aviator_forced_crash()
+    if forced_crash is not None:
+        return forced_crash, "avmod", None
+
+    crash_multiplier = choose_aviator_crash_multiplier()
+    promo_min = consume_aviator_promo()
+    if promo_min is not None:
+        return max(crash_multiplier, promo_min), "promo", promo_min
+
+    return crash_multiplier, "normal", None
+
+def get_aviator_multiplier_for_tick(tick):
+    if tick <= 4:
+        multiplier = (tick / 4) ** 1.15
+    else:
+        flight_progress = min(1.0, (tick - 4) / max(1, AVIATOR_MAX_TICKS - 4))
+        multiplier = 1.0 + (flight_progress ** 2.2) * (AVIATOR_MAX_MULTIPLIER - 1.0)
+    return min(AVIATOR_MAX_MULTIPLIER, round(multiplier, 2))
+
+def get_aviator_multiplier_for_elapsed(elapsed_seconds):
+    tick = max(0, elapsed_seconds / AVIATOR_TICK_SECONDS)
+    if tick <= 4:
+        multiplier = (tick / 4) ** 1.15
+    else:
+        flight_progress = min(1.0, (tick - 4) / max(1, AVIATOR_MAX_TICKS - 4))
+        multiplier = 1.0 + (flight_progress ** 2.2) * (AVIATOR_MAX_MULTIPLIER - 1.0)
+    return min(AVIATOR_MAX_MULTIPLIER, round(multiplier, 2))
+
+def get_aviator_seconds_for_multiplier(multiplier):
+    multiplier = max(0.0, min(float(multiplier), AVIATOR_MAX_MULTIPLIER))
+    if multiplier <= 1.0:
+        tick = 4 * (multiplier ** (1 / 1.15)) if multiplier > 0 else 0
+    else:
+        flight_progress = ((multiplier - 1.0) / (AVIATOR_MAX_MULTIPLIER - 1.0)) ** (1 / 2.2)
+        tick = 4 + flight_progress * max(1, AVIATOR_MAX_TICKS - 4)
+    return tick * AVIATOR_TICK_SECONDS
+
+def get_aviator_visible_multiplier(round_state, elapsed_seconds):
+    multiplier = get_aviator_multiplier_for_elapsed(elapsed_seconds)
+    crash_multiplier = round_state.get("crash_multiplier", AVIATOR_MAX_MULTIPLIER)
+    if crash_multiplier > 1.0:
+        multiplier = min(multiplier, max(0.0, crash_multiplier - 0.01))
+    else:
+        multiplier = min(multiplier, crash_multiplier)
+    return round(max(0.0, multiplier), 2)
+
+def render_aviator_track(multiplier, crashed=False):
+    width = 18
+    progress = max(0, min(width - 1, int((max(multiplier, 0) / 5.0) * (width - 1))))
+    marker = "💥" if crashed else "✈️"
+    return "━" * progress + marker + "·" * (width - progress - 1)
+
+def build_aviator_keyboard(round_id, multiplier):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            f"💸 CASH OUT {format_aviator_multiplier(multiplier)}",
+            callback_data=f"aviator_cashout:{round_id}"
+        )
+    ]])
+
+def build_aviator_players_text(round_state, limit=8):
+    lines = []
+    for item in round_state["bets"].values():
+        label = escape_markdown(item["label"])
+        auto_text = format_aviator_multiplier(item["auto_cashout"]) if item["auto_cashout"] else "manuel"
+        if item.get("voided"):
+            lines.append(f"VOID {label}: {format_money(item['bet'])} | iade {format_money(item.get('refund_amount', 0))}")
+        elif item.get("cashed_out"):
+            lines.append(f"✅ {label}: {format_money(item['bet'])} -> {format_aviator_multiplier(item['cashout_multiplier'])}")
+        else:
+            lines.append(f"• {label}: {format_money(item['bet'])} | {auto_text}")
+    if len(lines) > limit:
+        visible = lines[:limit]
+        visible.append(f"... +{len(lines) - limit} oyuncu")
+        return "\n".join(visible)
+    return "\n".join(lines) if lines else "Oyuncu yok"
+
+def build_aviator_admin_player_status(item, current_multiplier):
+    label = escape_markdown(item.get("label") or item.get("user_id") or "Oyuncu")
+    user_id = item.get("user_id", "?")
+    bet = item.get("bet", 0)
+    paid = item.get("paid", 0) or 0
+    auto_cashout = item.get("auto_cashout")
+    auto_text = format_aviator_multiplier(auto_cashout) if auto_cashout else "manuel"
+
+    if item.get("voided"):
+        status = f"VOID | İade: **{format_money(item.get('refund_amount', 0))}**"
+    elif item.get("cashed_out"):
+        status = (
+            f"ÇEKİLDİ | Oran: **{format_aviator_multiplier(item.get('cashout_multiplier', 0))}** "
+            f"| Ödeme: **{format_money(paid)}**"
+        )
+    elif item.get("resolved"):
+        status = "KAYBETTİ | Çekmedi"
+    elif item.get("resolving"):
+        status = "İŞLENİYOR"
+    else:
+        potential = int(bet * max(0.0, current_multiplier))
+        status = f"OYUNDA | Şu an potansiyel: **{format_money(potential)}**"
+
+    return (
+        f"• `{user_id}` {label}\n"
+        f"  Bahis: **{format_money(bet)}** | Çıkış: **{auto_text}**\n"
+        f"  Durum: {status}"
+    )
+
+def build_aviator_pending_admin_text():
+    if not AVIATOR_PENDING_BETS:
+        return "Bekleyen Aviator bahsi yok."
+
+    lines = []
+    for item in AVIATOR_PENDING_BETS.values():
+        label = escape_markdown(item.get("label") or item.get("user_id") or "Oyuncu")
+        user_id = item.get("user_id", "?")
+        auto_cashout = item.get("auto_cashout")
+        auto_text = format_aviator_multiplier(auto_cashout) if auto_cashout else "manuel"
+        lines.append(
+            f"• `{user_id}` {label} | Bahis: **{format_money(item.get('bet', 0))}** | Çıkış: **{auto_text}**"
+        )
+
+    return "\n".join(lines)
+
+def build_active_aviator_admin_report():
+    round_state = AVIATOR_CURRENT_ROUND
+    pending_total = get_aviator_pending_total()
+
+    if round_state is None:
+        return (
+            f"📡 **AKTİF AVIATOR RAPORU**\n\n"
+            f"Aktif uçan tur yok.\n"
+            f"Bekleyen oyuncu: **{len(AVIATOR_PENDING_BETS)}**\n"
+            f"Bekleyen toplam bahis: **{format_money(pending_total)}** Çip\n\n"
+            f"**Bekleyen Bahisler**\n{build_aviator_pending_admin_text()}"
+        )
+
+    current_multiplier = get_aviator_cut_multiplier(round_state) if round_state.get("status") == "flying" else round_state.get("current_multiplier", 0.0)
+    elapsed_seconds = max(0, int(time.monotonic() - round_state.get("started_at", time.monotonic())))
+    mode = round_state.get("mode", "normal")
+    promo_text = (
+        f" | Promo min: **{format_aviator_multiplier(round_state['promo_min'])}**"
+        if round_state.get("mode") == "promo" and round_state.get("promo_min") is not None
+        else ""
+    )
+    players = list(round_state.get("bets", {}).values())
+    active_count = sum(1 for item in players if not item.get("resolved"))
+    cashed_count = sum(1 for item in players if item.get("cashed_out"))
+    lost_count = sum(1 for item in players if item.get("resolved") and not item.get("cashed_out") and not item.get("voided"))
+    player_lines = [
+        build_aviator_admin_player_status(item, current_multiplier)
+        for item in players
+    ]
+
+    return (
+        f"📡 **AKTİF AVIATOR RAPORU**\n\n"
+        f"Tur: `#{round_state['round_id']}`\n"
+        f"Durum: **{round_state.get('status', 'bilinmiyor').upper()}**\n"
+        f"Mod: **{mode}**{promo_text}\n"
+        f"Anlık çarpan: **{format_aviator_multiplier(current_multiplier)}**\n"
+        f"Admin crash hedefi: **{format_aviator_multiplier(round_state.get('crash_multiplier', 0.0))}**\n"
+        f"Süre: **{elapsed_seconds} sn**\n"
+        f"Oyuncu: **{len(players)}** | Oyunda: **{active_count}** | Çekilen: **{cashed_count}** | Kaybeden: **{lost_count}**\n"
+        f"Toplam bahis: **{format_money(round_state.get('total_bet', 0))}** Çip\n"
+        f"Ödenen: **{format_money(round_state.get('paid_total', 0))}** Çip\n\n"
+        f"**Oyuncu Durumları**\n{chr(10).join(player_lines) if player_lines else 'Oyuncu yok.'}"
+    )
+
+def build_aviator_round_text(round_state, status_text):
+    multiplier = round_state.get("current_multiplier", 1.0)
+    crashed = round_state.get("status") == "crashed"
+    mode_text = f"Mod: **PROMO min {format_aviator_multiplier(round_state['promo_min'])}**\n" if round_state.get("mode") == "promo" else ""
+    return (
+        f"✈️ **AVIATOR ORTAK TUR**\n\n"
+        f"Tur: `#{round_state['round_id']}`\n"
+        f"{mode_text}"
+        f"Çarpan: **{format_aviator_multiplier(multiplier)}**\n"
+        f"Toplam bahis: **{format_money(round_state['total_bet'])}** Çip\n"
+        f"Ödenen: **{format_money(round_state.get('paid_total', 0))}** Çip\n"
+        f"`{render_aviator_track(multiplier, crashed)}`\n\n"
+        f"{status_text}\n\n"
+        f"**Oyuncular**\n{build_aviator_players_text(round_state)}"
+    )
+
+def build_aviator_live_text(round_state):
+    mode_text = f"PROMO min {format_aviator_multiplier(round_state['promo_min'])}\n" if round_state.get("mode") == "promo" else ""
+    return (
+        f"✈️ **AVIATOR UÇUYOR**\n\n"
+        f"Tur: `#{round_state['round_id']}`\n"
+        f"{mode_text}"
+        f"Toplam bahis: **{format_money(round_state['total_bet'])}** Çip\n"
+        f"Oyuncu: **{len(round_state['bets'])}**\n\n"
+        f"Canlı cash out oranı butonda güncellenir."
+    )
+
+def build_aviator_queue_text():
+    pending_count = len(AVIATOR_PENDING_BETS)
+    pending_total = get_aviator_pending_total()
+    return (
+        f"✈️ **Aviator bahsi sıraya alındı.**\n"
+        f"Sonraki kalkış dakika başında otomatik olur.\n"
+        f"Sıradaki oyuncu: **{pending_count}/{AVIATOR_MAX_PLAYERS_PER_ROUND}**\n"
+        f"Sıradaki toplam bahis: **{format_money(pending_total)}** Çip"
+    )
+
+def log_aviator_round_start(round_state):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO aviator_rounds
+        (round_id, crash_multiplier, status, mode, total_bet, paid_total, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            round_state["round_id"],
+            round_state["crash_multiplier"],
+            "flying",
+            round_state.get("mode", "normal"),
+            round_state["total_bet"],
+            0,
+            int(time.time())
+        )
+    )
+    for user_id, item in round_state["bets"].items():
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO aviator_round_bets
+            (round_id, user_id, label, bet, paid, cashout_multiplier, resolved)
+            VALUES (?, ?, ?, ?, 0, NULL, 0)
+            """,
+            (round_state["round_id"], user_id, item.get("label"), item["bet"])
+        )
+    conn.commit()
+    conn.close()
+
+def record_aviator_bet_result(round_state, user_id):
+    item = round_state["bets"].get(user_id)
+    if item is None:
+        return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE aviator_round_bets
+        SET paid = ?, cashout_multiplier = ?, resolved = 1
+        WHERE round_id = ? AND user_id = ?
+        """,
+        (
+            item.get("paid", 0),
+            item.get("cashout_multiplier"),
+            round_state["round_id"],
+            user_id
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def record_aviator_round_finish(round_state):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE aviator_rounds
+        SET status = ?, crash_multiplier = ?, paid_total = ?, ended_at = ?
+        WHERE round_id = ?
+        """,
+        (
+            round_state.get("status", "crashed"),
+            round_state.get("crash_multiplier", 0),
+            round_state.get("paid_total", 0),
+            int(time.time()),
+            round_state["round_id"]
+        )
+    )
+    conn.commit()
+    conn.close()
+
+def reverse_aviator_stat(cursor, user_id, bet, paid):
+    win_int = 1 if paid > bet else 0
+    cursor.execute(
+        """
+        UPDATE game_stats
+        SET total_games = MAX(0, total_games - 1),
+            winning_games = MAX(0, winning_games - ?),
+            total_wagered = MAX(0, total_wagered - ?),
+            total_paid = MAX(0, total_paid - ?)
+        WHERE game_type = 'aviator'
+        """,
+        (win_int, bet, paid)
+    )
+    cursor.execute(
+        """
+        UPDATE user_game_stats
+        SET total_games = MAX(0, total_games - 1),
+            winning_games = MAX(0, winning_games - ?),
+            total_wagered = MAX(0, total_wagered - ?),
+            total_paid = MAX(0, total_paid - ?)
+        WHERE user_id = ? AND game_type = 'aviator'
+        """,
+        (win_int, bet, paid, user_id)
+    )
+
+def void_aviator_round(round_id, admin_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT status FROM aviator_rounds WHERE round_id = ?",
+        (round_id,)
+    )
+    round_row = cursor.fetchone()
+    if round_row is None or round_row[0] == "voided":
+        conn.close()
+        return None
+
+    cursor.execute(
+        "SELECT user_id, bet, paid, resolved, refunded FROM aviator_round_bets WHERE round_id = ?",
+        (round_id,)
+    )
+    rows = cursor.fetchall()
+    refunded_total = 0
+    for user_id, bet, paid, resolved, refunded in rows:
+        paid = paid or 0
+        if resolved:
+            reverse_aviator_stat(cursor, user_id, bet, paid)
+        refund_amount = 0 if refunded else max(0, bet - paid)
+        if refund_amount > 0:
+            cursor.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)", (user_id,))
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (refund_amount, user_id))
+            refunded_total += refund_amount
+        cursor.execute(
+            """
+            UPDATE aviator_round_bets
+            SET refunded = 1, refund_amount = refund_amount + ?
+            WHERE round_id = ? AND user_id = ?
+            """,
+            (refund_amount, round_id, user_id)
+        )
+
+    cursor.execute(
+        """
+        UPDATE aviator_rounds
+        SET status = 'voided', voided_at = ?, voided_by = ?, refunded_total = refunded_total + ?
+        WHERE round_id = ?
+        """,
+        (int(time.time()), admin_id, refunded_total, round_id)
+    )
+    conn.commit()
+    conn.close()
+    return {"players": len(rows), "refunded_total": refunded_total}
+
+async def pay_aviator_bet(round_state, user_id, multiplier, auto=False):
+    item = round_state["bets"].get(user_id)
+    if item is None or item.get("resolved"):
+        return 0
+
+    raw_paid = int(item["bet"] * multiplier)
+    paid = raw_paid
+
+    item["resolved"] = True
+    item["resolving"] = False
+    item["cashed_out"] = True
+    item["cashout_multiplier"] = multiplier
+    item["paid"] = paid
+    round_state["paid_total"] = round_state.get("paid_total", 0) + paid
+
+    is_win = paid > item["bet"]
+    update_game_stats('aviator', item["bet"], paid, is_win, user_id)
+    if paid > 0:
+        update_balance(user_id, paid)
+    record_aviator_bet_result(round_state, user_id)
+    return paid
+
+def lose_aviator_bet(round_state, user_id):
+    item = round_state["bets"].get(user_id)
+    if item is None or item.get("resolved") or item.get("resolving"):
+        return
+    item["resolved"] = True
+    item["paid"] = 0
+    update_game_stats('aviator', item["bet"], 0, False, user_id)
+    record_aviator_bet_result(round_state, user_id)
+
+async def start_aviator_round(application):
+    global AVIATOR_CURRENT_ROUND
+    if AVIATOR_CURRENT_ROUND is not None or not AVIATOR_PENDING_BETS:
+        return
+
+    target_chat_id, target_thread_id = get_aviator_pending_topic_key() or (AVIATOR_CHAT_ID, AVIATOR_TOPIC_ID)
+    bets = dict(AVIATOR_PENDING_BETS)
+    AVIATOR_PENDING_BETS.clear()
+    crash_multiplier, aviator_mode, promo_min = choose_aviator_round_crash_multiplier()
+    started_at = time.monotonic()
+    crash_after_seconds = get_aviator_seconds_for_multiplier(crash_multiplier)
+    close_after_seconds = crash_after_seconds + AVIATOR_CRASH_SYNC_DELAY_SECONDS
+    round_state = {
+        "round_id": random.randint(100000, 999999),
+        "chat_id": target_chat_id,
+        "thread_id": target_thread_id,
+        "bets": bets,
+        "total_bet": sum(item["bet"] for item in bets.values()),
+        "paid_total": 0,
+        "current_multiplier": 0.0,
+        "last_live_multiplier": 0.0,
+        "crash_multiplier": crash_multiplier,
+        "started_at": started_at,
+        "crash_after_seconds": crash_after_seconds,
+        "actual_crash_at": started_at + crash_after_seconds,
+        "close_after_seconds": close_after_seconds,
+        "crash_at": started_at + close_after_seconds,
+        "status": "flying",
+        "mode": aviator_mode,
+        "promo_min": promo_min,
+        "message": None,
+    }
+    AVIATOR_CURRENT_ROUND = round_state
+
+    message = await asyncio.wait_for(
+        application.bot.send_message(
+            chat_id=target_chat_id,
+            message_thread_id=target_thread_id,
+            text=build_aviator_live_text(round_state),
+            parse_mode="Markdown",
+            reply_markup=build_aviator_keyboard(round_state["round_id"], 0.0)
+        ),
+        timeout=TELEGRAM_MESSAGE_TIMEOUT_SECONDS
+    )
+    round_state["message"] = message
+    log_aviator_round_start(round_state)
+    application.create_task(update_aviator_live_display(round_state))
+    application.create_task(run_aviator_round(round_state, application))
+
+async def update_aviator_live_display(round_state):
+    while round_state.get("status") == "flying":
+        await asyncio.sleep(AVIATOR_DISPLAY_UPDATE_SECONDS)
+        if round_state.get("status") != "flying" or round_state.get("finalizing"):
+            return
+
+        now = time.monotonic()
+        if now >= round_state.get("crash_at", now):
+            return
+
+        elapsed = now - round_state.get("started_at", now)
+        multiplier = get_aviator_visible_multiplier(round_state, elapsed)
+        round_state["current_multiplier"] = multiplier
+
+        if multiplier == round_state.get("last_live_multiplier"):
+            continue
+
+        if round_state.get("live_editing"):
+            continue
+
+        round_state["live_editing"] = True
+        try:
+            if round_state.get("status") != "flying" or round_state.get("finalizing"):
+                return
+            await asyncio.wait_for(
+                round_state["message"].edit_reply_markup(
+                    reply_markup=build_aviator_keyboard(round_state["round_id"], multiplier)
+                ),
+                timeout=0.9
+            )
+            round_state["last_live_multiplier"] = multiplier
+        except Exception:
+            pass
+        finally:
+            round_state["live_editing"] = False
+
+def get_aviator_cut_multiplier(round_state):
+    now = time.monotonic()
+    elapsed = max(0.0, now - round_state.get("started_at", now))
+    visible_multiplier = get_aviator_visible_multiplier(round_state, elapsed)
+    live_multiplier = max(
+        round_state.get("last_live_multiplier", 0.0) or 0.0,
+        round_state.get("current_multiplier", 0.0) or 0.0,
+    )
+    return round(max(0.0, visible_multiplier, live_multiplier), 2)
+
+async def finish_aviator_round(round_state, application, crash_multiplier=None, cut_by_admin=False):
+    if round_state.get("status") != "flying" or round_state.get("finalizing"):
+        return False
+
+    if crash_multiplier is None:
+        crash_multiplier = round_state.get("crash_multiplier", 0.0)
+    crash_multiplier = parse_aviator_multiplier_value(crash_multiplier)
+    if crash_multiplier is None:
+        crash_multiplier = 0.0
+
+    round_state["finalizing"] = True
+    round_state["status"] = "crashed"
+    round_state["crash_multiplier"] = crash_multiplier
+    round_state["current_multiplier"] = crash_multiplier
+
+    for user_id, item in list(round_state["bets"].items()):
+        auto_cashout = item.get("auto_cashout")
+        if (
+            auto_cashout is not None
+            and auto_cashout >= 1.0
+            and auto_cashout < crash_multiplier
+            and not item.get("resolved")
+            and not item.get("resolving")
+        ):
+            await pay_aviator_bet(round_state, user_id, auto_cashout, auto=True)
+        else:
+            lose_aviator_bet(round_state, user_id)
+
+    status_text = (
+        f"💥 **BUST!** Uçak **{format_aviator_multiplier(crash_multiplier)}** seviyesinde düştü."
+        if crash_multiplier <= 1.0
+        else f"💥 **PATLADI!** Uçak **{format_aviator_multiplier(crash_multiplier)}** seviyesinde düştü."
+    )
+
+    record_aviator_round_finish(round_state)
+    final_text = build_aviator_round_text(round_state, status_text)
+    try:
+        await asyncio.wait_for(
+            round_state["message"].edit_text(final_text, parse_mode="Markdown", reply_markup=None),
+            timeout=TELEGRAM_MESSAGE_TIMEOUT_SECONDS
+        )
+    except Exception:
+        try:
+            await asyncio.wait_for(
+                round_state["message"].edit_reply_markup(reply_markup=None),
+                timeout=1.0
+            )
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(
+                application.bot.send_message(
+                    chat_id=round_state.get("chat_id", AVIATOR_CHAT_ID),
+                    text=final_text,
+                    parse_mode="Markdown",
+                    message_thread_id=round_state.get("thread_id", AVIATOR_TOPIC_ID)
+                ),
+                timeout=TELEGRAM_MESSAGE_TIMEOUT_SECONDS
+            )
+        except Exception:
+            pass
+    return True
+
+async def run_aviator_round(round_state, application):
+    global AVIATOR_CURRENT_ROUND
+    try:
+        await asyncio.sleep(round_state.get("close_after_seconds", round_state.get("crash_after_seconds", 0)))
+        if round_state.get("status") != "flying":
+            return
+
+        await finish_aviator_round(round_state, application)
+    finally:
+        if AVIATOR_CURRENT_ROUND is round_state:
+            AVIATOR_CURRENT_ROUND = None
+
+async def run_aviator_scheduler(application):
+    global AVIATOR_LAST_STARTED_MINUTE
+    while True:
+        await asyncio.sleep(max(0.1, 60 - (time.time() % 60)))
+        now = time.localtime()
+        minute_key = (now.tm_year, now.tm_yday, now.tm_hour, now.tm_min)
+        if now.tm_sec == 0 and AVIATOR_LAST_STARTED_MINUTE != minute_key:
+            AVIATOR_LAST_STARTED_MINUTE = minute_key
+            if AVIATOR_CURRENT_ROUND is None and AVIATOR_PENDING_BETS:
+                try:
+                    await start_aviator_round(application)
+                except Exception:
+                    pass
+
+async def play_aviator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+
+    if not is_aviator_topic(update):
+        await update.message.reply_text(
+            "✈️ Lütfen Aviator konusunda oyunu oynayınız.",
+            message_thread_id=thread_id
+        )
+        return
+
+    topic_key = get_aviator_topic_key(update)
+    args = context.args or (update.message.text.split()[1:] if update.message and update.message.text else [])
+    if not args:
+        await update.message.reply_text(
+            f"❌ **Kullanım:** `/aviator [Miktar] [Oto Çıkış]`\n"
+            f"Örnek: `/aviator 10t` veya `/aviator 10t 2x`\n"
+            f"Tur dakika başında otomatik kalkar.\n"
+            f"Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Oto: x1.01 - x{AVIATOR_MAX_AUTO_CASHOUT:g}",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    bet = parse_money(args[0])
+    auto_cashout = parse_aviator_cashout_arg(args[1]) if len(args) >= 2 else None
+
+    if bet is None or bet < MIN_BET_AVIATOR or bet > MAX_BET_AVIATOR:
+        await update.message.reply_text(
+            f"❌ Geçersiz bahis! Aviator için **{format_money(MIN_BET_AVIATOR)}** ile **{format_money(MAX_BET_AVIATOR)}** arası oynayabilirsin.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if len(args) >= 2 and auto_cashout is None:
+        await update.message.reply_text(
+            f"❌ Oto çıkış çarpanı **x1.01** ile **x{AVIATOR_MAX_AUTO_CASHOUT:g}** arasında olmalı. Örnek: `/aviator 10t 2x`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if user_id in AVIATOR_PENDING_BETS:
+        await update.message.reply_text(
+            "⏳ Sıradaki Aviator turunda zaten bahsin var. Tur başlayınca yeni bahis alabilirsin.",
+            message_thread_id=thread_id
+        )
+        return
+
+    pending_topic_key = get_aviator_pending_topic_key()
+    if pending_topic_key is not None and pending_topic_key != topic_key:
+        await update.message.reply_text(
+            "⏳ Şu an diğer Aviator konusunda bekleyen tur var. O tur başlayınca bu konuda yeni sıra açılır.",
+            message_thread_id=thread_id
+        )
+        return
+
+    if len(AVIATOR_PENDING_BETS) >= AVIATOR_MAX_PLAYERS_PER_ROUND:
+        await update.message.reply_text("❌ Bu Aviator turu oyuncu limitine ulaştı.", message_thread_id=thread_id)
+        return
+
+    if get_balance(user_id) < bet:
+        await update.message.reply_text("❌ Bakiyen yetersiz!", message_thread_id=thread_id)
+        return
+
+    update_balance(user_id, -bet)
+    AVIATOR_PENDING_BETS[user_id] = {
+        "user_id": user_id,
+        "label": get_aviator_user_label(update.effective_user),
+        "chat_id": topic_key[0],
+        "thread_id": topic_key[1],
+        "bet": bet,
+        "auto_cashout": auto_cashout,
+        "resolved": False,
+        "cashed_out": False,
+        "paid": 0,
+    }
+
+    await update.message.reply_text(
+        build_aviator_queue_text(),
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def force_start_aviator_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    if AVIATOR_CURRENT_ROUND is not None:
+        await update.message.reply_text(
+            "⏳ Aktif Aviator turu bitmeden yeni tur başlatılmaz.",
+            message_thread_id=thread_id
+        )
+        return
+
+    if not AVIATOR_PENDING_BETS:
+        await update.message.reply_text(
+            "❌ Sırada Aviator bahsi yok. Önce `/aviator 10t` ile bahis alın.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    await update.message.reply_text("✈️ Test kalkışı başlatılıyor.", message_thread_id=thread_id)
+    await start_aviator_round(context.application)
+
+async def cut_aviator_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AVIATOR_CURRENT_ROUND
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    admin_id = update.effective_user.id
+    chat_type = getattr(update.effective_chat, "type", None)
+    is_private_chat = chat_type == "private"
+
+    async def notify_admin(text, parse_mode=None):
+        sent_message = await send_admin_private_notice(context, admin_id, text, parse_mode=parse_mode)
+        if sent_message is None and is_private_chat and update.message:
+            await update.message.reply_text(text, parse_mode=parse_mode)
+
+    round_state = AVIATOR_CURRENT_ROUND
+    if round_state is None or round_state.get("status") != "flying":
+        await notify_admin("Aktif Aviator turu yok.")
+        return
+
+    if round_state.get("finalizing"):
+        await notify_admin("Tur zaten sonuçlanıyor.")
+        return
+
+    cut_multiplier = get_aviator_cut_multiplier(round_state)
+    finished = await finish_aviator_round(
+        round_state,
+        context.application,
+        crash_multiplier=cut_multiplier,
+        cut_by_admin=True
+    )
+    if not finished:
+        await notify_admin("Tur kesilemedi; muhtemelen zaten kapandı.")
+        return
+
+    if AVIATOR_CURRENT_ROUND is round_state:
+        AVIATOR_CURRENT_ROUND = None
+
+    await notify_admin(
+        f"Kes uygulandı.\nTur: `#{round_state['round_id']}`\nÇarpan: **{format_aviator_multiplier(cut_multiplier)}**\nOyuncu ekranında normal patlama olarak görünür.",
+        parse_mode="Markdown"
+    )
+
+async def active_aviator_report_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    report_text = build_active_aviator_admin_report()
+    chat_type = getattr(update.effective_chat, "type", None)
+    thread_id = update.message.message_thread_id if update.message else None
+    chunks = split_telegram_text(report_text)
+
+    if chat_type == "private":
+        sent_count = 0
+        for chunk in chunks:
+            sent_count = max(
+                sent_count,
+                await send_all_admin_private_notices(context, chunk, parse_mode="Markdown")
+            )
+
+        if sent_count == 0 and update.message:
+            await update.message.reply_text(
+                "Rapor admin özel mesajlarına gönderilemedi.",
+                message_thread_id=thread_id
+            )
+        return
+
+    for chunk in chunks:
+        await update.message.reply_text(
+            chunk,
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+
+async def aviator_mod_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    args = context.args or []
+    action = args[0].lower().strip() if args else "durum"
+
+    if action in {"durum", "status"}:
+        values = get_aviator_forced_crashes()
+        if not values:
+            await update.message.reply_text("AVMOD kapali. Aviator normal sansla calisiyor.", message_thread_id=thread_id)
+            return
+        await update.message.reply_text(
+            f"AVMOD aktif.\nKalan tur: {len(values)}\nSiradaki crashler: {format_aviator_sequence(values)}",
+            message_thread_id=thread_id
+        )
+        return
+
+    if action in {"kapat", "off", "sil", "temizle", "normal", "stop", "dur"}:
+        set_aviator_forced_crashes([])
+        await update.message.reply_text("AVMOD kapatildi. Aviator normal sansa dondu.", message_thread_id=thread_id)
+        return
+
+    try:
+        round_count = int(args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text(
+            "Kullanim: `/avmod [TurSayisi] [Crashler]`\nOrnek: `/avmod 5 0 1.12 1.80 4x 25x`\nKapat: `/avmod kapat`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if round_count <= 0 or round_count > 200:
+        await update.message.reply_text("Tur sayisi 1 ile 200 arasinda olmali.", message_thread_id=thread_id)
+        return
+
+    crash_args = split_aviator_multiplier_args(args[1:])
+    if len(crash_args) < round_count:
+        await update.message.reply_text(
+            f"{round_count} tur icin {round_count} crash degeri lazim. Girilen: {len(crash_args)}",
+            message_thread_id=thread_id
+        )
+        return
+
+    values = []
+    for raw_value in crash_args[:round_count]:
+        multiplier = parse_aviator_multiplier_value(raw_value)
+        if multiplier is None:
+            await update.message.reply_text(
+                f"Gecersiz crash: `{raw_value}`\nDegerler x0 ile x{AVIATOR_MAX_MULTIPLIER:g} arasinda olmali.",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+            return
+        values.append(multiplier)
+
+    set_aviator_forced_crashes(values)
+    await update.message.reply_text(
+        f"AVMOD aktif edildi.\nKalan tur: {len(values)}\nCrash sirasi: {format_aviator_sequence(values)}",
+        message_thread_id=thread_id
+    )
+
+async def aviator_promo_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    args = context.args or []
+    action = args[0].lower().strip() if args else "durum"
+
+    if action in {"durum", "status"}:
+        promo = get_aviator_promo()
+        if promo is None:
+            await update.message.reply_text("Aviator promo kapali.", message_thread_id=thread_id)
+            return
+        min_crash, count = promo
+        await update.message.reply_text(
+            f"Aviator promo aktif.\nKalan tur: {count}\nMinimum crash: {format_aviator_multiplier(min_crash)}",
+            message_thread_id=thread_id
+        )
+        return
+
+    if action in {"kapat", "off", "sil", "temizle", "normal", "stop", "dur"}:
+        set_aviator_promo()
+        await update.message.reply_text("Aviator promo kapatildi.", message_thread_id=thread_id)
+        return
+
+    min_crash = parse_aviator_multiplier_value(args[0], min_value=1.0)
+    if min_crash is None:
+        await update.message.reply_text(
+            f"Kullanim: `/avpromo [MinCrash] [TurSayisi]`\nOrnek: `/avpromo 2x 10`\nMin crash x1 ile x{AVIATOR_MAX_MULTIPLIER:g} arasinda olmali.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    try:
+        round_count = int(args[1]) if len(args) >= 2 else 1
+    except ValueError:
+        round_count = 0
+
+    if round_count <= 0 or round_count > 200:
+        await update.message.reply_text("Promo tur sayisi 1 ile 200 arasinda olmali.", message_thread_id=thread_id)
+        return
+
+    set_aviator_promo(min_crash, round_count)
+    await update.message.reply_text(
+        f"Aviator promo aktif edildi.\nKalan tur: {round_count}\nMinimum crash: {format_aviator_multiplier(min_crash)}",
+        message_thread_id=thread_id
+    )
+
+async def aviator_void_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AVIATOR_CURRENT_ROUND
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target_round_id = None
+
+    if context.args:
+        try:
+            target_round_id = int(str(context.args[0]).lstrip("#"))
+        except ValueError:
+            target_round_id = None
+    elif AVIATOR_CURRENT_ROUND is not None:
+        target_round_id = AVIATOR_CURRENT_ROUND.get("round_id")
+
+    if target_round_id is None:
+        await update.message.reply_text(
+            "Kullanim: `/avvoid [TurNo]`\nAktif tur varsa tur no yazmadan da iptal eder.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    current_round = AVIATOR_CURRENT_ROUND
+    is_current_round = current_round is not None and current_round.get("round_id") == target_round_id
+    result = void_aviator_round(target_round_id, update.effective_user.id)
+    if result is None:
+        await update.message.reply_text("Tur bulunamadi veya zaten void edilmis.", message_thread_id=thread_id)
+        return
+
+    if is_current_round:
+        current_round["status"] = "voided"
+        current_round["finalizing"] = True
+        current_round["current_multiplier"] = current_round.get("current_multiplier", 0.0)
+        for item in current_round["bets"].values():
+            paid = item.get("paid", 0) or 0
+            refund_amount = max(0, item["bet"] - paid)
+            item["resolved"] = True
+            item["resolving"] = False
+            item["voided"] = True
+            item["refund_amount"] = refund_amount
+
+        status_text = (
+            f"VOID: Tur admin tarafindan iptal edildi.\n"
+            f"Iade: **{format_money(result['refunded_total'])}** Chip | Oyuncu: **{result['players']}**"
+        )
+        final_text = build_aviator_round_text(current_round, status_text)
+        try:
+            await asyncio.wait_for(
+                current_round["message"].edit_text(final_text, parse_mode="Markdown", reply_markup=None),
+                timeout=TELEGRAM_MESSAGE_TIMEOUT_SECONDS
+            )
+        except Exception:
+            try:
+                await asyncio.wait_for(current_round["message"].edit_reply_markup(reply_markup=None), timeout=1.0)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(
+                    context.bot.send_message(
+                        chat_id=current_round.get("chat_id", AVIATOR_CHAT_ID),
+                        text=final_text,
+                        parse_mode="Markdown",
+                        message_thread_id=current_round.get("thread_id", AVIATOR_TOPIC_ID)
+                    ),
+                    timeout=TELEGRAM_MESSAGE_TIMEOUT_SECONDS
+                )
+            except Exception:
+                pass
+        AVIATOR_CURRENT_ROUND = None
+
+    await update.message.reply_text(
+        f"VOID tamamlandi.\nTur: #{target_round_id}\nIade: {format_money(result['refunded_total'])} Chip | Oyuncu: {result['players']}",
+        message_thread_id=thread_id
+    )
+
+async def finalize_aviator_cashout(round_state, user_id, multiplier):
+    try:
+        return await pay_aviator_bet(round_state, user_id, multiplier)
+    except Exception:
+        item = round_state["bets"].get(user_id)
+        if item is not None:
+            item["resolving"] = False
+        return None
+
+async def aviator_cashout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    message = query.message
+    if not is_aviator_topic(message):
+        await safe_query_answer(query, "Bu buton Aviator konusunda geçerli.", show_alert=True)
+        return
+
+    try:
+        _, round_id_text = query.data.split(":", 1)
+        round_id = int(round_id_text)
+    except (ValueError, AttributeError):
+        await safe_query_answer(query)
+        return
+
+    round_state = AVIATOR_CURRENT_ROUND
+    if (
+        round_state is None
+        or round_state.get("status") != "flying"
+        or round_state.get("finalizing")
+        or round_state.get("round_id") != round_id
+    ):
+        await safe_query_answer(query, "Bu tur kapandı. Sonuç mesajını kontrol et.", show_alert=True)
+        return
+
+    user_id = query.from_user.id
+    item = round_state["bets"].get(user_id)
+    if item is None:
+        await safe_query_answer(query, "Bu turda bahsin yok.", show_alert=True)
+        return
+    if item.get("resolved") or item.get("resolving"):
+        await safe_query_answer(query, "Bu bahis zaten kapandı.", show_alert=True)
+        return
+
+    now = time.monotonic()
+    if now >= round_state.get("crash_at", now):
+        await safe_query_answer(query, "Uçak düştü, cash out kaçtı.", show_alert=True)
+        return
+
+    multiplier = round_state.get("last_live_multiplier", round_state.get("current_multiplier", 0.0))
+    if multiplier >= round_state.get("crash_multiplier", 0.0):
+        await safe_query_answer(query, "Uçak düştü, cash out kaçtı.", show_alert=True)
+        return
+
+    if multiplier < 1.0:
+        await safe_query_answer(query, "Çarpan x1.00 olmadan cash out açılmaz.", show_alert=True)
+        return
+
+    item["resolving"] = True
+    paid = await finalize_aviator_cashout(round_state, user_id, multiplier)
+    if paid is None:
+        await safe_query_answer(query, "Cash out işlenemedi, tekrar dene.", show_alert=True)
+        return
+
+    await safe_query_answer(
+        query,
+        f"{format_aviator_multiplier(multiplier)} cash out: {format_money(paid)}",
+        show_alert=False
+    )
+
 async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     remember_user(update.effective_user)
@@ -1276,6 +2554,15 @@ def simulate_horse_round(bet):
     winner = choose_horse_winner(selected_horse, bet)
     return int(bet * HORSE_CONFIG[selected_horse]["multiplier"]) if winner == selected_horse else 0
 
+def simulate_aviator_round(bet):
+    auto_cashout = random.choices(
+        [1.25, 1.5, 2.0, 3.0, 5.0, 10.0],
+        weights=[18, 28, 25, 16, 9, 4],
+        k=1
+    )[0]
+    crash_multiplier = choose_aviator_crash_multiplier(auto_cashout)
+    return int(bet * auto_cashout) if crash_multiplier >= auto_cashout else 0
+
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
@@ -1288,7 +2575,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_game = TEST_GAME_ALIASES.get(requested_game)
     if selected_game is None:
         await update.message.reply_text(
-            "❌ Kullanım: `/test` veya `/test [slot/dart/bowling/atyarisi/rulet/lcdp]`",
+            "❌ Kullanım: `/test` veya `/test [slot/dart/bowling/atyarisi/rulet/lcdp/aviator]`",
             parse_mode="Markdown",
             message_thread_id=thread_id
         )
@@ -1307,8 +2594,9 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_thread_id=thread_id
     )
 
-    for index in range(1, total_games + 1):
-        game_type = games[(index - 1) % len(games)]
+    for index in range(total_games):
+        current_game_no = index + 1
+        game_type = games[index % len(games)]
         if game_type == "slot":
             paid = simulate_slot_round(bet)
         elif game_type == "dart":
@@ -1319,6 +2607,8 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paid = simulate_lcdp_round(bet)
         elif game_type == "atyarisi":
             paid = simulate_horse_round(bet)
+        elif game_type == "aviator":
+            paid = simulate_aviator_round(bet)
         else:
             paid = simulate_roulette_round(bet)
 
@@ -1327,11 +2617,11 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats[game_type]["wagered"] += bet
         stats[game_type]["paid"] += paid
 
-        if index % 100 == 0 or index == total_games:
-            percent = int(index / total_games * 100)
+        if current_game_no % 100 == 0 or current_game_no == total_games:
+            percent = int(current_game_no / total_games * 100)
             try:
                 await progress_message.edit_text(
-                    f"🧪 **Test çalışıyor**\n`{build_progress_bar(index, total_games)}` %{percent}",
+                    f"🧪 **Test çalışıyor**\n`{build_progress_bar(current_game_no, total_games)}` %{percent}",
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -1354,6 +2644,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "atyarisi": "AT YARIŞI",
         "roulette": "RULET",
         "lcdp": "LCDP",
+        "aviator": "AVIATOR",
     }
     for game_type in games:
         item = stats[game_type]
@@ -1480,9 +2771,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
         f"• `/lcdp [Miktar]` (Min {format_money(MIN_BET_LCDP)} | Max {format_money(MAX_BET_LCDP)})\n"
         f"• `/lcdp [Miktar] freespin` veya `/lcdpfs [Miktar]` (Min {format_money(MIN_LCDP_FREE_SPIN_BUY)} | Max {format_money(MAX_LCDP_FREE_SPIN_BUY)})\n\n"
+        f"• `/aviator [Miktar] [Oto Çıkış]` (Dakika başı ortak tur | Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Örn: `/aviator 10t 2x`)\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
+        f"• `/kreditalep [Miktar]` - Admin onayı için kredi talebi açar\n"
         f"• `/top10` - En zengin 10 oyuncuyu listeler\n"
         f"• `/bilgi` - Kendi oyun ve bakiye bilgilerini gösterir\n"
         f"• `/transfer [ID/@kullanıcı] [Miktar]` - Başka kullanıcıya çip gönderir\n"
@@ -1490,20 +2783,42 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if is_admin:
         help_text += (
-            f"\n⚡ **[ADMİN ÖZEL] Yönetim Komutları:**\n"
-            f"• `/bakiyeekle [ID/Yanıt] [Miktar]`\n"
-            f"• `/bakiyesil [ID/Yanıt] [Miktar]`\n"
-            f"• `/panel` - Kasa ve oyun verilerini gösterir\n"
-            f"• `/mod normal` - Yüzdeli modu kapatır\n"
-            f"• `/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35` - Yüzdeli test modunu ayarlar\n"
-            f"• `/test [oyun]` - 1000 oyun simülasyonu yapar\n"
-            f"• `/bilgi [ID/@kullanıcı]` - Başka kullanıcıların bilgilerini gösterir\n"
-            f"• `/panelsifirla` - Kasa geçmişini temizler\n"
-            f"• `/bakim ac|kapat|durum` - Bot bakım modunu yönetir\n"
-            f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
+            f"\n⚡ Admin komutları için `/admin`\n"
         )
         
     await update.message.reply_text(help_text, parse_mode="Markdown", message_thread_id=thread_id)
+
+async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    admin_text = (
+        f"⚡ **ADMİN KOMUTLARI**\n\n"
+        f"• `/bakiyeekle [ID/Yanıt] [Miktar]`\n"
+        f"• `/bakiyesil [ID/Yanıt] [Miktar]`\n"
+        f"• `/kredi` - Kredi alanları ve bekleyen talepleri gösterir\n"
+        f"• `/kredionay [TalepNo]` - Kredi talebini onaylar\n"
+        f"• `/krediret [TalepNo]` - Kredi talebini reddeder\n"
+        f"• `/krediodendi [TalepNo]` - Krediyi ödendi işaretler\n"
+        f"• `/krediodenmedi [TalepNo]` - Krediyi ödenmedi işaretler\n"
+        f"• `/kredisil [TalepNo]` - Kredi kaydını listeden siler\n"
+        f"• `/panel` - Kasa ve oyun verilerini gösterir\n"
+        f"• `/mod normal` - Yüzdeli modu kapatır\n"
+        f"• `/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35` - Yüzdeli test modunu ayarlar\n"
+        f"• `/test [oyun]` - 1000 oyun simülasyonu yapar\n"
+        f"• `/avbaslat` veya `/aviatorbaslat` - Aviator test turunu dakika beklemeden başlatır\n"
+        f"• `/aktifoyun` veya `/avdurum` - Aktif Aviator oyuncu/cashout raporunu adminlere yollar\n"
+        f"• `/kes` - Aktif Aviator turunu anlık çarpandan bitirir\n"
+        f"• `/avmod [TurSayısı] [Crashler]` - Sonraki Aviator turlarına crash sırası verir\n"
+        f"• `/avpromo [MinCrash] [TurSayısı]` - Sonraki Aviator turlarına minimum crash promosu verir\n"
+        f"• `/avvoid [TurNo]` - Aviator turunu iptal edip kalan/kaybeden bahisleri iade eder\n"
+        f"• `/bilgi [ID/@kullanıcı]` - Başka kullanıcıların bilgilerini gösterir\n"
+        f"• `/panelsifirla` - Kasa geçmişini temizler\n"
+        f"• `/bakim ac|kapat|durum` - Bot bakım modunu yönetir\n"
+        f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
+    )
+    await update.message.reply_text(admin_text, parse_mode="Markdown", message_thread_id=thread_id)
 
 
 # --- 5. GÜVENLİ ADMİN KOMUTLARI ---
@@ -1626,6 +2941,543 @@ def get_user_display_name(user_id, username, first_name, last_name):
     full_name = " ".join(part for part in [first_name, last_name] if part)
     return full_name or f"ID: {user_id}"
 
+def format_timestamp(timestamp):
+    if not timestamp:
+        return "-"
+    return time.strftime("%d.%m.%Y %H:%M", time.localtime(int(timestamp)))
+
+def create_credit_request(user_id, amount):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT request_id FROM credit_requests WHERE user_id = ? AND status = 'pending'",
+        (user_id,)
+    )
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return None, existing[0]
+
+    cursor.execute(
+        "INSERT INTO credit_requests (user_id, amount, requested_at) VALUES (?, ?, ?)",
+        (user_id, amount, int(time.time()))
+    )
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return request_id, None
+
+def get_pending_credit_request(target):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    if target is None:
+        conn.close()
+        return None
+
+    mode, value = target
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        conn.close()
+        return None
+
+    if mode == "request":
+        cursor.execute(
+            """
+            SELECT request_id, user_id, amount, status, requested_at
+            FROM credit_requests
+            WHERE request_id = ? AND status = 'pending'
+            """,
+            (value,)
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT request_id, user_id, amount, status, requested_at
+            FROM credit_requests
+            WHERE user_id = ? AND status = 'pending'
+            ORDER BY request_id DESC
+            LIMIT 1
+            """,
+            (value,)
+        )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def decide_credit_request(request_id, status, admin_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT user_id, amount
+        FROM credit_requests
+        WHERE request_id = ? AND status = 'pending'
+        """,
+        (request_id,)
+    )
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    user_id, amount = row
+    cursor.execute(
+        """
+        UPDATE credit_requests
+        SET status = ?, decided_at = ?, decided_by = ?
+        WHERE request_id = ? AND status = 'pending'
+        """,
+        (status, int(time.time()), admin_id, request_id)
+    )
+    conn.commit()
+    conn.close()
+    return user_id, amount
+
+def get_credit_summary(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'rejected' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'approved' AND paid = 1 THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'approved' AND COALESCE(paid, 0) = 0 THEN amount ELSE 0 END), 0),
+            SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'approved' AND paid = 1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'approved' AND COALESCE(paid, 0) = 0 THEN 1 ELSE 0 END),
+            MAX(CASE WHEN status = 'approved' THEN decided_at ELSE NULL END)
+        FROM credit_requests
+        WHERE user_id = ?
+        """,
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    (
+        approved_amount, pending_amount, rejected_amount,
+        paid_amount, unpaid_amount,
+        approved_count, pending_count, rejected_count,
+        paid_count, unpaid_count, latest_approved_at
+    ) = row
+    return {
+        "approved_amount": approved_amount or 0,
+        "pending_amount": pending_amount or 0,
+        "rejected_amount": rejected_amount or 0,
+        "paid_amount": paid_amount or 0,
+        "unpaid_amount": unpaid_amount or 0,
+        "approved_count": approved_count or 0,
+        "pending_count": pending_count or 0,
+        "rejected_count": rejected_count or 0,
+        "paid_count": paid_count or 0,
+        "unpaid_count": unpaid_count or 0,
+        "latest_approved_at": latest_approved_at,
+    }
+
+def resolve_credit_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.args:
+        target_arg = context.args[0]
+        if target_arg.startswith("@"):
+            user_id = find_user_id_by_username(target_arg)
+            return ("user", user_id) if user_id is not None else None
+        return ("request", target_arg)
+    if update.message.reply_to_message:
+        remember_user(update.message.reply_to_message.from_user)
+        return ("user", update.message.reply_to_message.from_user.id)
+    return None
+
+def get_credit_user_rows():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cr.user_id, u.username, u.first_name, u.last_name,
+               SUM(CASE WHEN cr.status = 'approved' THEN cr.amount ELSE 0 END) AS approved_total,
+               SUM(CASE WHEN cr.status = 'pending' THEN cr.amount ELSE 0 END) AS pending_total,
+               SUM(CASE WHEN cr.status = 'approved' AND COALESCE(cr.paid, 0) = 0 THEN cr.amount ELSE 0 END) AS unpaid_total,
+               SUM(CASE WHEN cr.status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+               SUM(CASE WHEN cr.status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+               MAX(CASE WHEN cr.status = 'approved' THEN cr.decided_at ELSE NULL END) AS latest_approved_at
+        FROM credit_requests cr
+        LEFT JOIN users u ON u.user_id = cr.user_id
+        WHERE cr.status != 'deleted'
+        GROUP BY cr.user_id
+        HAVING approved_total > 0 OR pending_total > 0
+        ORDER BY pending_total DESC, unpaid_total DESC, approved_total DESC
+        LIMIT 20
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_credit_detail_rows():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cr.request_id, cr.user_id, u.username, u.first_name, u.last_name,
+               cr.amount, cr.decided_at, COALESCE(cr.paid, 0), cr.paid_at
+        FROM credit_requests cr
+        LEFT JOIN users u ON u.user_id = cr.user_id
+        WHERE cr.status = 'approved'
+        ORDER BY COALESCE(cr.paid, 0) ASC, cr.decided_at DESC, cr.request_id DESC
+        LIMIT 20
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_pending_credit_rows():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cr.request_id, cr.user_id, u.username, u.first_name, u.last_name, cr.amount, cr.requested_at
+        FROM credit_requests cr
+        LEFT JOIN users u ON u.user_id = cr.user_id
+        WHERE cr.status = 'pending'
+        ORDER BY cr.request_id DESC
+        LIMIT 15
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_credit_request_for_action(target, allowed_statuses=None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    if target is None:
+        conn.close()
+        return None
+
+    mode, value = target
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        conn.close()
+        return None
+
+    allowed_statuses = allowed_statuses or ["approved", "pending", "rejected"]
+    placeholders = ",".join("?" for _ in allowed_statuses)
+    if mode == "request":
+        cursor.execute(
+            f"""
+            SELECT request_id, user_id, amount, status, requested_at, decided_at, COALESCE(paid, 0), paid_at
+            FROM credit_requests
+            WHERE request_id = ? AND status IN ({placeholders})
+            """,
+            [value, *allowed_statuses]
+        )
+    else:
+        cursor.execute(
+            f"""
+            SELECT request_id, user_id, amount, status, requested_at, decided_at, COALESCE(paid, 0), paid_at
+            FROM credit_requests
+            WHERE user_id = ? AND status IN ({placeholders})
+            ORDER BY request_id DESC
+            LIMIT 1
+            """,
+            [value, *allowed_statuses]
+        )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def set_credit_paid_status(request_id, paid, admin_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT user_id, amount FROM credit_requests WHERE request_id = ? AND status = 'approved'",
+        (request_id,)
+    )
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    paid_at = int(time.time()) if paid else None
+    cursor.execute(
+        """
+        UPDATE credit_requests
+        SET paid = ?, paid_at = ?, paid_marked_by = ?
+        WHERE request_id = ? AND status = 'approved'
+        """,
+        (1 if paid else 0, paid_at, admin_id, request_id)
+    )
+    conn.commit()
+    conn.close()
+    return row
+
+def delete_credit_request_record(request_id, admin_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT user_id, amount, status
+        FROM credit_requests
+        WHERE request_id = ? AND status != 'deleted'
+        """,
+        (request_id,)
+    )
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    cursor.execute(
+        """
+        UPDATE credit_requests
+        SET status = 'deleted', deleted_at = ?, deleted_by = ?
+        WHERE request_id = ? AND status != 'deleted'
+        """,
+        (int(time.time()), admin_id, request_id)
+    )
+    conn.commit()
+    conn.close()
+    return row
+
+async def credit_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Kullanım: `/kreditalep [Miktar]`\nÖrnek: `/kreditalep 10t`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    amount = parse_money(context.args[0])
+    if amount is None or amount <= 0:
+        await update.message.reply_text("❌ Geçersiz kredi miktarı.", message_thread_id=thread_id)
+        return
+
+    request_id, existing_id = create_credit_request(user_id, amount)
+    if existing_id is not None:
+        await update.message.reply_text(
+            f"⏳ Zaten bekleyen kredi talebin var: `#{existing_id}`\nAdmin onay/ret verince tekrar talep açabilirsin.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    await update.message.reply_text(
+        f"✅ Kredi talebin alındı.\n"
+        f"Talep No: `#{request_id}`\n"
+        f"Miktar: **{format_money(amount)}** Çip\n"
+        f"Talep Tarihi: {format_timestamp(int(time.time()))}\n"
+        f"Admin `/kredionay {request_id}` veya `/krediret {request_id}` ile karar verebilir.",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def approve_credit_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target = resolve_credit_target(update, context)
+    request_row = get_pending_credit_request(target)
+    if request_row is None:
+        await update.message.reply_text(
+            "❌ Bekleyen kredi talebi bulunamadı.\nKullanım: `/kredionay [TalepNo]` veya talep mesajına yanıt verip `/kredionay`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    request_id, target_id, amount, _, requested_at = request_row
+    approved_at = int(time.time())
+    decided = decide_credit_request(request_id, "approved", update.effective_user.id)
+    if decided is None:
+        await update.message.reply_text("❌ Talep artık beklemede değil.", message_thread_id=thread_id)
+        return
+
+    update_balance(target_id, amount)
+    update_admin_balance_totals(target_id, added=amount)
+    await update.message.reply_text(
+        f"✅ Kredi onaylandı.\n"
+        f"Talep: `#{request_id}`\n"
+        f"Kullanıcı: `{target_id}`\n"
+        f"Eklenen: **{format_money(amount)}** Çip\n"
+        f"Talep Tarihi: {format_timestamp(requested_at)}\n"
+        f"Alındığı Tarih: {format_timestamp(approved_at)}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def reject_credit_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target = resolve_credit_target(update, context)
+    request_row = get_pending_credit_request(target)
+    if request_row is None:
+        await update.message.reply_text(
+            "❌ Bekleyen kredi talebi bulunamadı.\nKullanım: `/krediret [TalepNo]` veya talep mesajına yanıt verip `/krediret`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    request_id, target_id, amount, _, requested_at = request_row
+    decided = decide_credit_request(request_id, "rejected", update.effective_user.id)
+    if decided is None:
+        await update.message.reply_text("❌ Talep artık beklemede değil.", message_thread_id=thread_id)
+        return
+
+    await update.message.reply_text(
+        f"🚫 Kredi reddedildi.\n"
+        f"Talep: `#{request_id}`\n"
+        f"Kullanıcı: `{target_id}`\n"
+        f"Miktar: **{format_money(amount)}** Çip\n"
+        f"Talep Tarihi: {format_timestamp(requested_at)}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def credit_list_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    pending_rows = get_pending_credit_rows()
+    credit_rows = get_credit_user_rows()
+    credit_detail_rows = get_credit_detail_rows()
+
+    pending_lines = []
+    for request_id, user_id, username, first_name, last_name, amount, requested_at in pending_rows:
+        display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
+        pending_lines.append(f"`#{request_id}` {display_name} (`{user_id}`) -> **{format_money(amount)}** | Talep: {format_timestamp(requested_at)}")
+
+    detail_lines = []
+    for request_id, user_id, username, first_name, last_name, amount, decided_at, paid, paid_at in credit_detail_rows:
+        display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
+        paid_text = f"Ödendi ({format_timestamp(paid_at)})" if paid else "Ödenmedi"
+        detail_lines.append(
+            f"`#{request_id}` {display_name} (`{user_id}`) -> **{format_money(amount)}** | Alındı: {format_timestamp(decided_at)} | {paid_text}"
+        )
+
+    credit_lines = []
+    for user_id, username, first_name, last_name, approved_total, pending_total, unpaid_total, approved_count, pending_count, latest_approved_at in credit_rows:
+        display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
+        credit_lines.append(
+            f"{display_name} (`{user_id}`) | Onaylı: **{format_money(approved_total or 0)}** ({approved_count or 0}) | Ödenmedi: **{format_money(unpaid_total or 0)}** | Bekleyen: **{format_money(pending_total or 0)}** ({pending_count or 0}) | Son: {format_timestamp(latest_approved_at)}"
+        )
+
+    text = (
+        f"💳 **KREDİ PANELİ**\n\n"
+        f"**Bekleyen Talepler**\n"
+        f"{chr(10).join(pending_lines) if pending_lines else 'Bekleyen talep yok.'}\n\n"
+        f"**Onaylı Kredi Kayıtları**\n"
+        f"{chr(10).join(detail_lines) if detail_lines else 'Onaylı kredi kaydı yok.'}\n\n"
+        f"**Kullanıcı Özeti**\n"
+        f"{chr(10).join(credit_lines) if credit_lines else 'Henüz kredi alan yok.'}\n\n"
+        f"Onay: `/kredionay [TalepNo]` | Ret: `/krediret [TalepNo]`\n"
+        f"Ödendi: `/krediodendi [TalepNo]` | Ödenmedi: `/krediodenmedi [TalepNo]` | Sil: `/kredisil [TalepNo]`"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", message_thread_id=thread_id)
+
+async def mark_credit_paid_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target = resolve_credit_target(update, context)
+    request_row = get_credit_request_for_action(target, ["approved"])
+    if request_row is None:
+        await update.message.reply_text(
+            "❌ Onaylı kredi kaydı bulunamadı.\nKullanım: `/krediodendi [TalepNo]`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    request_id, target_id, amount, _, _, decided_at, _, _ = request_row
+    result = set_credit_paid_status(request_id, True, update.effective_user.id)
+    if result is None:
+        await update.message.reply_text("❌ Kredi işaretlenemedi.", message_thread_id=thread_id)
+        return
+
+    await update.message.reply_text(
+        f"✅ Kredi ödendi olarak işaretlendi.\n"
+        f"Talep: `#{request_id}`\n"
+        f"Kullanıcı: `{target_id}`\n"
+        f"Miktar: **{format_money(amount)}** Çip\n"
+        f"Alındı: {format_timestamp(decided_at)}\n"
+        f"Ödendi: {format_timestamp(int(time.time()))}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def mark_credit_unpaid_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target = resolve_credit_target(update, context)
+    request_row = get_credit_request_for_action(target, ["approved"])
+    if request_row is None:
+        await update.message.reply_text(
+            "❌ Onaylı kredi kaydı bulunamadı.\nKullanım: `/krediodenmedi [TalepNo]`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    request_id, target_id, amount, _, _, decided_at, _, _ = request_row
+    result = set_credit_paid_status(request_id, False, update.effective_user.id)
+    if result is None:
+        await update.message.reply_text("❌ Kredi işaretlenemedi.", message_thread_id=thread_id)
+        return
+
+    await update.message.reply_text(
+        f"↩️ Kredi ödenmedi olarak işaretlendi.\n"
+        f"Talep: `#{request_id}`\n"
+        f"Kullanıcı: `{target_id}`\n"
+        f"Miktar: **{format_money(amount)}** Çip\n"
+        f"Alındı: {format_timestamp(decided_at)}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def delete_credit_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target = resolve_credit_target(update, context)
+    request_row = get_credit_request_for_action(target, ["approved", "pending", "rejected"])
+    if request_row is None:
+        await update.message.reply_text(
+            "❌ Silinecek kredi kaydı bulunamadı.\nKullanım: `/kredisil [TalepNo]`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    request_id, target_id, amount, status, requested_at, decided_at, _, _ = request_row
+    result = delete_credit_request_record(request_id, update.effective_user.id)
+    if result is None:
+        await update.message.reply_text("❌ Kredi kaydı silinemedi.", message_thread_id=thread_id)
+        return
+
+    date_label = decided_at if status == "approved" else requested_at
+    await update.message.reply_text(
+        f"🗑️ Kredi kaydı listeden silindi.\n"
+        f"Talep: `#{request_id}`\n"
+        f"Kullanıcı: `{target_id}`\n"
+        f"Miktar: **{format_money(amount)}** Çip\n"
+        f"Tarih: {format_timestamp(date_label)}\n"
+        f"Not: Bakiye değiştirilmedi.",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
 async def add_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     thread_id = update.message.message_thread_id if update.message else None
@@ -1702,7 +3554,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_net = g_wag - g_paid
         g_loss = g_total - g_win
         
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️"}.get(g_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️", "aviator": "✈️"}.get(g_type, "🎮")
         
         panel_text += (
             f"{icon} **{g_type.upper()} İSTATİSTİKLERİ:**\n"
@@ -1768,6 +3620,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
     total_added = total_added or 0
     total_removed = total_removed or 0
+    credit_summary = get_credit_summary(user_id)
 
     total_games = 0
     total_wins = 0
@@ -1784,7 +3637,7 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         win_rate = (wins / games * 100) if games else 0
         losses = games - wins
         net = wagered - paid
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️"}.get(game_type, "🎮")
+        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️", "aviator": "✈️"}.get(game_type, "🎮")
         detail_text += (
             f"{icon} **{game_type.upper()}**\n"
             f"Oyun: {games} | Kazandı/Kaybetti: {wins}/{losses} | Kazanç: %{win_rate:.1f}\n"
@@ -1803,6 +3656,13 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Bakiye: **{format_money(balance)}** Çip\n"
         f"➕ Admin Eklenen: {format_money(total_added)}\n"
         f"➖ Admin Silinen: {format_money(total_removed)}\n\n"
+        f"💳 **Kredi Bilgisi**\n"
+        f"Onaylı: **{format_money(credit_summary['approved_amount'])}** ({credit_summary['approved_count']})\n"
+        f"Ödenen: **{format_money(credit_summary['paid_amount'])}** ({credit_summary['paid_count']})\n"
+        f"Ödenmeyen: **{format_money(credit_summary['unpaid_amount'])}** ({credit_summary['unpaid_count']})\n"
+        f"Bekleyen: **{format_money(credit_summary['pending_amount'])}** ({credit_summary['pending_count']})\n"
+        f"Reddedilen: **{format_money(credit_summary['rejected_amount'])}** ({credit_summary['rejected_count']})\n"
+        f"Son Alınan Kredi: **{format_timestamp(credit_summary['latest_approved_at'])}**\n\n"
         f"📊 **Genel Oyun Özeti**\n"
         f"Toplam Oyun: {total_games}\n"
         f"Kazandı/Kaybetti: {total_wins}/{total_losses}\n"
@@ -1856,7 +3716,21 @@ async def broadcast_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- 6. ANA ÇALIŞTIRICI ---
 async def main():
     init_db()
-    application = Application.builder().token(TOKEN).build()
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .connection_pool_size(32)
+        .pool_timeout(1.0)
+        .connect_timeout(3.0)
+        .read_timeout(6.0)
+        .write_timeout(6.0)
+        .get_updates_connection_pool_size(8)
+        .get_updates_pool_timeout(1.0)
+        .get_updates_connect_timeout(3.0)
+        .get_updates_read_timeout(30.0)
+        .get_updates_write_timeout(6.0)
+        .build()
+    )
 
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
@@ -1874,17 +3748,38 @@ async def main():
     application.add_handler(CommandHandler("rulet", play_roulette))
     application.add_handler(CommandHandler("lcdp", play_lcdp))
     application.add_handler(CommandHandler("lcdpfs", buy_lcdp_free_spin))
+    application.add_handler(CommandHandler("aviator", play_aviator))
+    application.add_handler(CommandHandler("av", play_aviator))
+    application.add_handler(CommandHandler("avbaslat", force_start_aviator_admin))
+    application.add_handler(CommandHandler("aviatorbaslat", force_start_aviator_admin))
+    application.add_handler(CommandHandler("aktifoyun", active_aviator_report_admin))
+    application.add_handler(CommandHandler("avdurum", active_aviator_report_admin))
+    application.add_handler(CommandHandler("kes", cut_aviator_admin))
+    application.add_handler(CommandHandler("avmod", aviator_mod_admin))
+    application.add_handler(CommandHandler("avpromo", aviator_promo_admin))
+    application.add_handler(CommandHandler("avvoid", aviator_void_admin))
+    application.add_handler(CallbackQueryHandler(aviator_cashout_callback, pattern=r"^aviator_cashout:"))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdp$"), play_lcdp))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdp\s+\S+"), play_lcdp))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdpfs$"), buy_lcdp_free_spin))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdpfs\s+\S+"), buy_lcdp_free_spin))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(aviator|av)$"), play_aviator))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(aviator|av)\s+\S+"), play_aviator))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
+    application.add_handler(CommandHandler("kreditalep", credit_request_command))
     application.add_handler(CommandHandler("transfer", transfer_command))
     application.add_handler(CommandHandler("komut", help_command))
+    application.add_handler(CommandHandler("admin", admin_help_command))
     application.add_handler(CommandHandler("test", test_command))
     
     # Admin Komutları
+    application.add_handler(CommandHandler("kredi", credit_list_admin))
+    application.add_handler(CommandHandler("kredionay", approve_credit_admin))
+    application.add_handler(CommandHandler("krediret", reject_credit_admin))
+    application.add_handler(CommandHandler("krediodendi", mark_credit_paid_admin))
+    application.add_handler(CommandHandler("krediodenmedi", mark_credit_unpaid_admin))
+    application.add_handler(CommandHandler("kredisil", delete_credit_admin))
     application.add_handler(CommandHandler("bakiyeekle", add_balance_admin))
     application.add_handler(CommandHandler("bakiyesil", remove_balance_admin))
     application.add_handler(CommandHandler("panel", admin_panel))
@@ -1899,6 +3794,7 @@ async def main():
     
     await application.initialize()
     await application.start()
+    application.create_task(run_aviator_scheduler(application))
     await application.updater.start_polling(drop_pending_updates=True)
     
     while True:
