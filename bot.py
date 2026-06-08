@@ -72,16 +72,16 @@ def format_money(amount):
     return str(amount)
 
 # --- OYUN LİMİTLERİ ---
-MIN_BET_DART_BOWL = parse_money("10t")
-MAX_BET_DART_BOWL = parse_money("100t")
-MIN_BET_SLOT = parse_money("10t")
-MAX_BET_SLOT = parse_money("100t")
-MIN_BET_HORSE = parse_money("10t")
-MAX_BET_HORSE = parse_money("100t")
-MIN_BET_ROULETTE = parse_money("10t")
-MAX_BET_ROULETTE = parse_money("100t")
-MIN_BET_LCDP = parse_money("10t")
-MAX_BET_LCDP = parse_money("100t")
+MIN_BET_DART_BOWL = parse_money("25t")
+MAX_BET_DART_BOWL = parse_money("250t")
+MIN_BET_SLOT = parse_money("25t")
+MAX_BET_SLOT = parse_money("250t")
+MIN_BET_HORSE = parse_money("25t")
+MAX_BET_HORSE = parse_money("250t")
+MIN_BET_ROULETTE = parse_money("25t")
+MAX_BET_ROULETTE = parse_money("250t")
+MIN_BET_LCDP = parse_money("25t")
+MAX_BET_LCDP = parse_money("250t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
     2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
