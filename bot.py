@@ -1272,7 +1272,7 @@ def get_aviator_topic_key(update_or_message):
     return chat.id, getattr(message, "message_thread_id", None)
 
 def is_aviator_topic(update_or_message):
-    return get_aviator_topic_key(update_or_message) in AVIATOR_ALLOWED_TOPICS
+    return True
 
 def get_aviator_pending_topic_key():
     if not AVIATOR_PENDING_BETS:
@@ -1956,13 +1956,6 @@ async def play_aviator(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update.effective_user)
     thread_id = update.message.message_thread_id if update.message else None
 
-    if not is_aviator_topic(update):
-        await update.message.reply_text(
-            "✈️ Lütfen Aviator konusunda oyunu oynayınız.",
-            message_thread_id=thread_id
-        )
-        return
-
     topic_key = get_aviator_topic_key(update)
     args = context.args or (update.message.text.split()[1:] if update.message and update.message.text else [])
     if not args:
@@ -2335,9 +2328,6 @@ async def finalize_aviator_cashout(round_state, user_id, multiplier):
 async def aviator_cashout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     message = query.message
-    if not is_aviator_topic(message):
-        await safe_query_answer(query, "Bu buton Aviator konusunda geçerli.", show_alert=True)
-        return
 
     try:
         _, round_id_text = query.data.split(":", 1)
