@@ -105,8 +105,8 @@ ROULETTE_OUTCOMES = [
     {"key": "yesil", "label": "Yeşil", "chance": 1, "icon": "🟢"},
 ]
 LCDP_SYMBOL_CONFIG = [
-    {"symbol": "🍇", "weight": 28, "pays": {8: 0.225, 10: 0.525, 12: 1.2, 15: 3}},
-    {"symbol": "🏺", "weight": 23, "pays": {8: 0.3, 10: 0.75, 12: 1.8, 15: 4.5}},
+    {"symbol": "🍇", "weight": 28, "pays": {8: 0.2, 10: 0.5, 12: 1, 15: 3}},
+    {"symbol": "🏺", "weight": 23, "pays": {8: 0.3, 10: 0.7, 12: 1.5, 15: 4}},
     {"symbol": "🛡️", "weight": 18, "pays": {8: 0.42, 10: 1.125, 12: 3.0, 15: 7.5}},
     {"symbol": "🔥", "weight": 13, "pays": {8: 0.675, 10: 1.8, 12: 4.5, 15: 13.5}},
     {"symbol": "⚡", "weight": 9, "pays": {8: 1.2, 10: 3.3, 12: 9.0, 15: 33}},
@@ -129,8 +129,8 @@ LCDP_MULTIPLIER_TABLE = [
     (100, 0.10),
 ]
 LCDP_FREE_SPIN_MULTIPLIER_TABLE = [
-    (0, 49.55),
-    (2, 22),
+    (0, 51.55),
+    (2, 2),
     (3, 10),
     (5, 5),
     (8, 3),
