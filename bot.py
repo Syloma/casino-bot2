@@ -168,6 +168,8 @@ AVIATOR_ALLOWED_TOPICS = [
     (-1003294364148, 192915),
 ]
 AVIATOR_MAX_PLAYERS_PER_ROUND = 25
+AVIATOR_BET_START_DELAY_SECONDS = 30
+AVIATOR_COUNTDOWN_SECONDS = 5
 AVIATOR_CRASH_RANGES = [
     (24, 0.00, 1.00),
     (30, 1.01, 1.30),
@@ -183,6 +185,7 @@ AVIATOR_CRASH_RANGES = [
 AVIATOR_PENDING_BETS = {}
 AVIATOR_CURRENT_ROUND = None
 AVIATOR_LAST_STARTED_MINUTE = None
+AVIATOR_START_TASKS = {}
 AVIATOR_FORCED_CRASHES_SETTING = "aviator_forced_crashes"
 AVIATOR_PROMO_SETTING = "aviator_promo"
 ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette', 'lcdp', 'aviator']
@@ -706,7 +709,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
         f"• `/lcdp [Bahis]` -> Bahisli LCDP oynar. 🏛️\n"
         f"• `/lcdpfs [Miktar]` -> LCDP free spin satin alir. 🎁\n\n"
-        f"• `/aviator [Bahis] [Oto Çıkış]` -> Dakika başı ortak Aviator turuna katılır. ✈️\n\n"
+        f"• `/aviator [Bahis] [Oto Çıkış]` -> Bahisten 30 saniye sonra ortak Aviator turuna katılır. ✈️\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -1281,8 +1284,50 @@ def get_aviator_pending_topic_key():
     return first_bet.get("chat_id", AVIATOR_CHAT_ID), first_bet.get("thread_id", AVIATOR_TOPIC_ID)
 
 def get_aviator_next_start_seconds():
-    seconds = time.localtime().tm_sec
-    return 60 - seconds if seconds else 60
+    return AVIATOR_BET_START_DELAY_SECONDS
+
+
+async def schedule_aviator_start(application, topic_key, delay=AVIATOR_BET_START_DELAY_SECONDS):
+    """Schedule a start for the given topic_key (chat_id, thread_id).
+    Waits `delay` seconds, performs a 5s countdown messages, then starts the round.
+    Multiple calls for the same topic_key will be ignored while a task exists.
+    """
+    key = tuple(topic_key or (AVIATOR_CHAT_ID, AVIATOR_TOPIC_ID))
+    if key in AVIATOR_START_TASKS:
+        return
+
+    async def _runner():
+        try:
+            # Wait until the final countdown window.
+            await asyncio.sleep(max(0, delay - AVIATOR_COUNTDOWN_SECONDS))
+
+            # If no pending bets for this topic, abort
+            pending_for_topic = [b for b in AVIATOR_PENDING_BETS.values() if (b.get("chat_id"), b.get("thread_id")) == key]
+            if not pending_for_topic:
+                return
+
+            chat_id, thread_id = key
+            # Send the final countdown messages.
+            for i in range(AVIATOR_COUNTDOWN_SECONDS, 0, -1):
+                try:
+                    await asyncio.wait_for(
+                        application.bot.send_message(chat_id=chat_id, text=f"✈️ Kalkışa {i} saniye kaldı...", message_thread_id=thread_id),
+                        timeout=TELEGRAM_MESSAGE_TIMEOUT_SECONDS
+                    )
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+
+            # Before starting, ensure there are still pending bets and no active round
+            if AVIATOR_CURRENT_ROUND is None and any((b for b in AVIATOR_PENDING_BETS.values() if (b.get("chat_id"), b.get("thread_id")) == key)):
+                await start_aviator_round(application)
+        except asyncio.CancelledError:
+            return
+        finally:
+            AVIATOR_START_TASKS.pop(key, None)
+
+    task = application.create_task(_runner())
+    AVIATOR_START_TASKS[key] = task
 
 def get_aviator_pending_total():
     return sum(item["bet"] for item in AVIATOR_PENDING_BETS.values())
@@ -1585,7 +1630,7 @@ def build_aviator_queue_text():
     pending_total = get_aviator_pending_total()
     return (
         f"✈️ **Aviator bahsi sıraya alındı.**\n"
-        f"Sonraki kalkış dakika başında otomatik olur.\n"
+        f"Sonraki kalkış bahisten 30 saniye sonra otomatik olur.\n"
         f"Sıradaki oyuncu: **{pending_count}/{AVIATOR_MAX_PLAYERS_PER_ROUND}**\n"
         f"Sıradaki toplam bahis: **{format_money(pending_total)}** Çip"
     )
@@ -1773,6 +1818,15 @@ async def start_aviator_round(application):
         return
 
     target_chat_id, target_thread_id = get_aviator_pending_topic_key() or (AVIATOR_CHAT_ID, AVIATOR_TOPIC_ID)
+    # Cancel any pending start task for this topic
+    topic_key = (target_chat_id, target_thread_id)
+    task = AVIATOR_START_TASKS.pop(topic_key, None)
+    if task is not None and not task.done():
+        try:
+            task.cancel()
+        except Exception:
+            pass
+
     bets = dict(AVIATOR_PENDING_BETS)
     AVIATOR_PENDING_BETS.clear()
     crash_multiplier, aviator_mode, promo_min = choose_aviator_round_crash_multiplier()
@@ -1939,15 +1993,24 @@ async def run_aviator_round(round_state, application):
 
 async def run_aviator_scheduler(application):
     global AVIATOR_LAST_STARTED_MINUTE
+    last_minute = time.localtime().tm_min
     while True:
-        await asyncio.sleep(max(0.1, 60 - (time.time() % 60)))
+        await asyncio.sleep(0.5)
         now = time.localtime()
+        if now.tm_min == last_minute:
+            continue
+
+        last_minute = now.tm_min
         minute_key = (now.tm_year, now.tm_yday, now.tm_hour, now.tm_min)
-        if now.tm_sec == 0 and AVIATOR_LAST_STARTED_MINUTE != minute_key:
-            AVIATOR_LAST_STARTED_MINUTE = minute_key
-            if AVIATOR_CURRENT_ROUND is None and AVIATOR_PENDING_BETS:
+        if AVIATOR_LAST_STARTED_MINUTE == minute_key:
+            continue
+
+        AVIATOR_LAST_STARTED_MINUTE = minute_key
+        if AVIATOR_CURRENT_ROUND is None and AVIATOR_PENDING_BETS:
+            topic_key = get_aviator_pending_topic_key()
+            if topic_key is not None and tuple(topic_key) not in AVIATOR_START_TASKS:
                 try:
-                    await start_aviator_round(application)
+                    application.create_task(schedule_aviator_start(application, topic_key))
                 except Exception:
                     pass
 
@@ -1962,7 +2025,7 @@ async def play_aviator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ **Kullanım:** `/aviator [Miktar] [Oto Çıkış]`\n"
             f"Örnek: `/aviator 10t` veya `/aviator 10t 2x`\n"
-            f"Tur dakika başında otomatik kalkar.\n"
+            f"Tur bahisten 30 saniye sonra otomatik kalkar.\n"
             f"Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Oto: x1.01 - x{AVIATOR_MAX_AUTO_CASHOUT:g}",
             parse_mode="Markdown",
             message_thread_id=thread_id
@@ -2010,6 +2073,7 @@ async def play_aviator(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if get_balance(user_id) < bet:
         await update.message.reply_text("❌ Bakiyen yetersiz!", message_thread_id=thread_id)
         return
+    was_empty = len(AVIATOR_PENDING_BETS) == 0
 
     update_balance(user_id, -bet)
     AVIATOR_PENDING_BETS[user_id] = {
@@ -2029,6 +2093,13 @@ async def play_aviator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         message_thread_id=thread_id
     )
+
+    # If this was the first pending bet for this topic, schedule a start after the bet delay.
+    if was_empty:
+        try:
+            context.application.create_task(schedule_aviator_start(context.application, topic_key))
+        except Exception:
+            pass
 
 async def force_start_aviator_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -2761,7 +2832,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
         f"• `/lcdp [Miktar]` (Min {format_money(MIN_BET_LCDP)} | Max {format_money(MAX_BET_LCDP)})\n"
         f"• `/lcdp [Miktar] freespin` veya `/lcdpfs [Miktar]` (Min {format_money(MIN_LCDP_FREE_SPIN_BUY)} | Max {format_money(MAX_LCDP_FREE_SPIN_BUY)})\n\n"
-        f"• `/aviator [Miktar] [Oto Çıkış]` (Dakika başı ortak tur | Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Örn: `/aviator 10t 2x`)\n"
+        f"• `/aviator [Miktar] [Oto Çıkış]` (Bahisten 30 sn sonra ortak tur | Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Örn: `/aviator 10t 2x`)\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
