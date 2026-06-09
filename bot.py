@@ -1821,7 +1821,8 @@ async def start_aviator_round(application):
     # Cancel any pending start task for this topic
     topic_key = (target_chat_id, target_thread_id)
     task = AVIATOR_START_TASKS.pop(topic_key, None)
-    if task is not None and not task.done():
+    current_task = asyncio.current_task()
+    if task is not None and task is not current_task and not task.done():
         try:
             task.cancel()
         except Exception:
