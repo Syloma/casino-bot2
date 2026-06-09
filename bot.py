@@ -82,8 +82,8 @@ MIN_BET_ROULETTE = parse_money("25t")
 MAX_BET_ROULETTE = parse_money("250t")
 MIN_BET_LCDP = parse_money("25t")
 MAX_BET_LCDP = parse_money("250t")
-MIN_BET_AVIATOR = parse_money("10t")
-MAX_BET_AVIATOR = parse_money("50t")
+MIN_BET_AVIATOR = parse_money("50t")
+MAX_BET_AVIATOR = parse_money("200t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
     2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
@@ -168,7 +168,7 @@ AVIATOR_ALLOWED_TOPICS = [
     (-1003294364148, 192915),
 ]
 AVIATOR_MAX_PLAYERS_PER_ROUND = 25
-AVIATOR_BET_START_DELAY_SECONDS = 30
+AVIATOR_BET_START_DELAY_SECONDS = 20
 AVIATOR_COUNTDOWN_SECONDS = 5
 AVIATOR_CRASH_RANGES = [
     (24, 0.00, 1.00),
@@ -709,7 +709,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/rulet [Bahis] [Renk]` -> Rulet oynar. 🎡\n\n"
         f"• `/lcdp [Bahis]` -> Bahisli LCDP oynar. 🏛️\n"
         f"• `/lcdpfs [Miktar]` -> LCDP free spin satin alir. 🎁\n\n"
-        f"• `/aviator [Bahis] [Oto Çıkış]` -> Bahisten 30 saniye sonra ortak Aviator turuna katılır. ✈️\n\n"
+        f"• `/aviator [Bahis] [Oto Çıkış]` -> Bahisten 20 saniye sonra ortak Aviator turuna katılır. ✈️\n\n"
         f"*(Bahislerde 10t, 20t, 100t gibi kısaltmalar kullanabilirsin)*\n"
         f"Tüm detaylar için **/komut** yazabilirsin!"
     )
@@ -1338,14 +1338,15 @@ def get_aviator_user_label(user):
     full_name = " ".join(part for part in [user.first_name, user.last_name] if part)
     return full_name or str(user.id)
 
-def parse_aviator_multiplier_value(value, min_value=0.0, max_value=None):
-    max_value = AVIATOR_MAX_MULTIPLIER if max_value is None else max_value
+def parse_aviator_multiplier_value(value, min_value=0.0, max_value=AVIATOR_MAX_MULTIPLIER):
     normalized = str(value).lower().strip().replace(",", ".").replace("x", "")
     try:
         multiplier = float(normalized)
     except (TypeError, ValueError):
         return None
-    if multiplier < min_value or multiplier > max_value:
+    if multiplier < min_value:
+        return None
+    if max_value is not None and multiplier > max_value:
         return None
     return round(multiplier, 2)
 
@@ -1371,7 +1372,7 @@ def get_aviator_forced_crashes():
     raw = get_setting(AVIATOR_FORCED_CRASHES_SETTING, "") or ""
     values = []
     for item in raw.split(","):
-        multiplier = parse_aviator_multiplier_value(item)
+        multiplier = parse_aviator_multiplier_value(item, max_value=None)
         if multiplier is not None:
             values.append(multiplier)
     return values
@@ -1447,21 +1448,21 @@ def get_aviator_multiplier_for_tick(tick):
     if tick <= 4:
         multiplier = (tick / 4) ** 1.15
     else:
-        flight_progress = min(1.0, (tick - 4) / max(1, AVIATOR_MAX_TICKS - 4))
+        flight_progress = (tick - 4) / max(1, AVIATOR_MAX_TICKS - 4)
         multiplier = 1.0 + (flight_progress ** 2.2) * (AVIATOR_MAX_MULTIPLIER - 1.0)
-    return min(AVIATOR_MAX_MULTIPLIER, round(multiplier, 2))
+    return round(multiplier, 2)
 
 def get_aviator_multiplier_for_elapsed(elapsed_seconds):
     tick = max(0, elapsed_seconds / AVIATOR_TICK_SECONDS)
     if tick <= 4:
         multiplier = (tick / 4) ** 1.15
     else:
-        flight_progress = min(1.0, (tick - 4) / max(1, AVIATOR_MAX_TICKS - 4))
+        flight_progress = (tick - 4) / max(1, AVIATOR_MAX_TICKS - 4)
         multiplier = 1.0 + (flight_progress ** 2.2) * (AVIATOR_MAX_MULTIPLIER - 1.0)
-    return min(AVIATOR_MAX_MULTIPLIER, round(multiplier, 2))
+    return round(multiplier, 2)
 
 def get_aviator_seconds_for_multiplier(multiplier):
-    multiplier = max(0.0, min(float(multiplier), AVIATOR_MAX_MULTIPLIER))
+    multiplier = max(0.0, float(multiplier))
     if multiplier <= 1.0:
         tick = 4 * (multiplier ** (1 / 1.15)) if multiplier > 0 else 0
     else:
@@ -1630,7 +1631,7 @@ def build_aviator_queue_text():
     pending_total = get_aviator_pending_total()
     return (
         f"✈️ **Aviator bahsi sıraya alındı.**\n"
-        f"Sonraki kalkış bahisten 30 saniye sonra otomatik olur.\n"
+        f"Sonraki kalkış bahisten 20 saniye sonra otomatik olur.\n"
         f"Sıradaki oyuncu: **{pending_count}/{AVIATOR_MAX_PLAYERS_PER_ROUND}**\n"
         f"Sıradaki toplam bahis: **{format_money(pending_total)}** Çip"
     )
@@ -1923,7 +1924,7 @@ async def finish_aviator_round(round_state, application, crash_multiplier=None, 
 
     if crash_multiplier is None:
         crash_multiplier = round_state.get("crash_multiplier", 0.0)
-    crash_multiplier = parse_aviator_multiplier_value(crash_multiplier)
+    crash_multiplier = parse_aviator_multiplier_value(crash_multiplier, max_value=None)
     if crash_multiplier is None:
         crash_multiplier = 0.0
 
@@ -2026,7 +2027,7 @@ async def play_aviator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ **Kullanım:** `/aviator [Miktar] [Oto Çıkış]`\n"
             f"Örnek: `/aviator 10t` veya `/aviator 10t 2x`\n"
-            f"Tur bahisten 30 saniye sonra otomatik kalkar.\n"
+            f"Tur bahisten 20 saniye sonra otomatik kalkar.\n"
             f"Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Oto: x1.01 - x{AVIATOR_MAX_AUTO_CASHOUT:g}",
             parse_mode="Markdown",
             message_thread_id=thread_id
@@ -2246,10 +2247,10 @@ async def aviator_mod_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     values = []
     for raw_value in crash_args[:round_count]:
-        multiplier = parse_aviator_multiplier_value(raw_value)
+        multiplier = parse_aviator_multiplier_value(raw_value, max_value=None)
         if multiplier is None:
             await update.message.reply_text(
-                f"Gecersiz crash: `{raw_value}`\nDegerler x0 ile x{AVIATOR_MAX_MULTIPLIER:g} arasinda olmali.",
+                f"Gecersiz crash: `{raw_value}`\nDeger x0 veya daha buyuk bir sayi olmali.",
                 parse_mode="Markdown",
                 message_thread_id=thread_id
             )
@@ -2833,7 +2834,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/rulet [Miktar] [kirmizi/siyah/yesil]` (Min {format_money(MIN_BET_ROULETTE)} | Max {format_money(MAX_BET_ROULETTE)})\n"
         f"• `/lcdp [Miktar]` (Min {format_money(MIN_BET_LCDP)} | Max {format_money(MAX_BET_LCDP)})\n"
         f"• `/lcdp [Miktar] freespin` veya `/lcdpfs [Miktar]` (Min {format_money(MIN_LCDP_FREE_SPIN_BUY)} | Max {format_money(MAX_LCDP_FREE_SPIN_BUY)})\n\n"
-        f"• `/aviator [Miktar] [Oto Çıkış]` (Bahisten 30 sn sonra ortak tur | Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Örn: `/aviator 10t 2x`)\n"
+        f"• `/aviator [Miktar] [Oto Çıkış]` (Bahisten 20 sn sonra ortak tur | Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Örn: `/aviator 10t 2x`)\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
