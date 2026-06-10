@@ -86,10 +86,10 @@ MIN_BET_AVIATOR = parse_money("50t")
 MAX_BET_AVIATOR = parse_money("200t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
-    2: {"name": "astral", "chance": 25, "multiplier": 2, "loss_message": "bana bastınız daha çok basın"},
-    3: {"name": "ziyan", "chance": 15, "multiplier": 3, "loss_message": "yine ziyan oldu hayaller"},
-    4: {"name": "jester", "chance": 12, "multiplier": 4, "loss_message": "daha 14 yaşındayım"},
-    5: {"name": "emrah", "chance": 8, "multiplier": 6, "loss_message": "koşamadım çünkü anamı kaybettim"},
+    2: {"name": "astral", "chance": 25, "multiplier": 2, "loss_message": "astral kaybetti. Bana bastınız daha çok basın"},
+    3: {"name": "ziyan", "chance": 15, "multiplier": 3, "loss_message": "ziyan kaybetti. Yine ziyan oldu hayaller"},
+    4: {"name": "jester", "chance": 12, "multiplier": 4, "loss_message": "Jester kaybetti. Daha 14 yaşındayım"},
+    5: {"name": "emrah", "chance": 8, "multiplier": 6, "loss_message": "Emkrah kaybetti. Koşamadım çünkü anamı kaybettim"},
     6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
     7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
     8: {"name": "Roket", "chance": 2, "multiplier": 20},
