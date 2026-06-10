@@ -86,10 +86,10 @@ MIN_BET_AVIATOR = parse_money("50t")
 MAX_BET_AVIATOR = parse_money("200t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
-    2: {"name": "Fırtına", "chance": 25, "multiplier": 2},
-    3: {"name": "Rüzgar", "chance": 15, "multiplier": 3},
-    4: {"name": "Kara İnci", "chance": 12, "multiplier": 4},
-    5: {"name": "Kasırga", "chance": 8, "multiplier": 6},
+    2: {"name": "Astral", "chance": 25, "multiplier": 2},
+    3: {"name": "Ziyan", "chance": 15, "multiplier": 3},
+    4: {"name": "Jester", "chance": 12, "multiplier": 4},
+    5: {"name": "Emrah", "chance": 8, "multiplier": 6},
     6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
     7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
     8: {"name": "Roket", "chance": 2, "multiplier": 20},
