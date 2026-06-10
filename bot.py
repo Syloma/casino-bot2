@@ -86,10 +86,10 @@ MIN_BET_AVIATOR = parse_money("50t")
 MAX_BET_AVIATOR = parse_money("200t")
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
-    2: {"name": "Astral", "chance": 25, "multiplier": 2},
-    3: {"name": "Ziyan", "chance": 15, "multiplier": 3},
-    4: {"name": "Jester", "chance": 12, "multiplier": 4},
-    5: {"name": "Emrah", "chance": 8, "multiplier": 6},
+    2: {"name": "astral", "chance": 25, "multiplier": 2, "loss_message": "bana bastınız daha çok basın"},
+    3: {"name": "ziyan", "chance": 15, "multiplier": 3, "loss_message": "yine ziyan oldu hayaller"},
+    4: {"name": "jester", "chance": 12, "multiplier": 4, "loss_message": "daha 14 yaşındayım"},
+    5: {"name": "emrah", "chance": 8, "multiplier": 6, "loss_message": "koşamadım çünkü anamı kaybettim"},
     6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
     7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
     8: {"name": "Roket", "chance": 2, "multiplier": 20},
@@ -2520,6 +2520,10 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result_text = f"🎉 **TEBRİKLER!** #{winner} {horse_names[winner]} kazandı. Bahsinin **x{multiplier:g}** katını aldın! (+{format_money(win_amount)})"
         else:
             result_text = f"😔 **Kaybettin.** Kazanan at: #{winner} {horse_names[winner]} (-{format_money(bet)})"
+
+            loss_message = HORSE_CONFIG[selected_horse].get("loss_message")
+            if loss_message:
+                result_text += f"\n{loss_message}"
 
         projected_balance = get_balance(user_id) + win_amount
         final_message = f"{result_text}\n\n💳 **Güncel Bakiyen:** {format_money(projected_balance)} Çip"
