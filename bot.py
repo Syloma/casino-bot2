@@ -4,6 +4,7 @@ import warnings
 import random
 import os
 import time
+import html
 from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
@@ -71,6 +72,9 @@ def format_money(amount):
     if amount >= 10**3:  return f"{amount / 10**3:g}k"
     return str(amount)
 
+def format_rate_percent(rate):
+    return f"%{rate * 100:g}"
+
 # --- OYUN LİMİTLERİ ---
 MIN_BET_DART_BOWL = parse_money("25t")
 MAX_BET_DART_BOWL = parse_money("250t")
@@ -84,6 +88,15 @@ MIN_BET_LCDP = parse_money("25t")
 MAX_BET_LCDP = parse_money("250t")
 MIN_BET_AVIATOR = parse_money("50t")
 MAX_BET_AVIATOR = parse_money("200t")
+MIN_BET_PVP = parse_money("20t")
+MAX_BET_PVP = parse_money("500t")
+PVP_COMMISSION_RATE = 0.10
+PVP_PAYOUT_MULTIPLIER = 2 - PVP_COMMISSION_RATE
+PVP_ROOMS = {}
+XOX_SIZE = 6
+XOX_EMPTY = "·"
+PVP_TURN_SECONDS = 20
+PVP_TURN_WARNING_SECONDS = 10
 HORSE_CONFIG = {
     1: {"name": "Süleyman", "chance": 35, "multiplier": 1},
     2: {"name": "astral", "chance": 25, "multiplier": 2, "loss_message": "Astral kaybetti. Bana bastınız daha çok basın"},
@@ -188,7 +201,9 @@ AVIATOR_LAST_STARTED_MINUTE = None
 AVIATOR_START_TASKS = {}
 AVIATOR_FORCED_CRASHES_SETTING = "aviator_forced_crashes"
 AVIATOR_PROMO_SETTING = "aviator_promo"
-ACTIVE_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette', 'lcdp', 'aviator']
+NORMAL_GAME_TYPES = ['slot', 'dart', 'bowling', 'atyarisi', 'roulette', 'lcdp', 'aviator']
+PVP_GAME_TYPES = ['pvp_zar', 'pvp_yirmibir', 'pvp_xox']
+ACTIVE_GAME_TYPES = NORMAL_GAME_TYPES + PVP_GAME_TYPES
 TEST_GAME_ALIASES = {
     "all": "all",
     "hepsi": "all",
@@ -2568,6 +2583,654 @@ def build_progress_bar(current, total, width=20):
     filled = int((current / total) * width) if total else width
     return "█" * filled + "░" * (width - filled)
 
+def get_user_label(user):
+    if user is None:
+        return "Oyuncu"
+    if user.username:
+        return f"@{user.username}"
+    full_name = " ".join(part for part in [user.first_name, user.last_name] if part)
+    return full_name or f"ID:{user.id}"
+
+def pvp_html_mention(user_id, label):
+    display = str(label or user_id)
+    if display.startswith("@"):
+        display = display[1:]
+    return f'<a href="tg://user?id={user_id}">{html.escape(display)}</a>'
+
+def cancel_pvp_turn_timers(room):
+    try:
+        current_task = asyncio.current_task()
+    except RuntimeError:
+        current_task = None
+    for key in ("warning_task", "timeout_task"):
+        task = room.pop(key, None)
+        if task and not task.done() and task is not current_task:
+            task.cancel()
+
+def get_pvp_active_player(room):
+    if room.get("game") == "yirmibir":
+        side = room.get("active_side")
+        user_id = room.get("creator_id") if side == "creator" else room.get("opponent_id")
+        label = room.get("creator_label") if side == "creator" else room.get("opponent_label")
+        hint = "Kart çek veya dur."
+        return user_id, label, hint
+    if room.get("game") == "xox":
+        symbol = room.get("xox_turn")
+        user_id = room.get("xox_players", {}).get(symbol)
+        label = xox_player_label(room, symbol) if user_id else symbol
+        hint = "XOX tahtasından bir kutu seç."
+        return user_id, label, hint
+    return None, None, None
+
+async def pvp_turn_warning(context, room, turn_token):
+    await asyncio.sleep(max(0, PVP_TURN_SECONDS - PVP_TURN_WARNING_SECONDS))
+    if PVP_ROOMS.get(room.get("code")) is not room or room.get("turn_token") != turn_token:
+        return
+    user_id, label, hint = get_pvp_active_player(room)
+    if not user_id:
+        return
+    mention = pvp_html_mention(user_id, label)
+    await safe_send_message(
+        context,
+        room["chat_id"],
+        f"⏳ {mention} sıra sende. {PVP_TURN_WARNING_SECONDS} saniyen kaldı. {html.escape(hint)}",
+        parse_mode="HTML",
+        message_thread_id=room.get("thread_id"),
+    )
+
+async def pvp_turn_timeout(context, room, turn_token):
+    await asyncio.sleep(PVP_TURN_SECONDS)
+    if PVP_ROOMS.get(room.get("code")) is not room or room.get("turn_token") != turn_token:
+        return
+    if room.get("game") == "yirmibir":
+        loser_side = room.get("active_side")
+        winner_side = "opponent" if loser_side == "creator" else "creator"
+        loser_label = room.get("creator_label") if loser_side == "creator" else room.get("opponent_label")
+        reason = f"⏰ {escape_markdown(loser_label)} 20 saniye içinde hamle yapmadı ve hükmen kaybetti."
+        await finish_pvp_21_room(context, room, forced_winner_side=winner_side, reason_text=reason)
+    elif room.get("game") == "xox":
+        loser_symbol = room.get("xox_turn")
+        winner_symbol = "O" if loser_symbol == "X" else "X"
+        loser_label = xox_player_label(room, loser_symbol)
+        reason = f"⏰ {escape_markdown(loser_label)} 20 saniye içinde hamle yapmadı ve hükmen kaybetti."
+        await finish_pvp_xox_room(context, room, winner_symbol, reason_text=reason)
+
+def start_pvp_turn_timer(context, room):
+    cancel_pvp_turn_timers(room)
+    room["turn_token"] = room.get("turn_token", 0) + 1
+    token = room["turn_token"]
+    room["warning_task"] = context.application.create_task(pvp_turn_warning(context, room, token))
+    room["timeout_task"] = context.application.create_task(pvp_turn_timeout(context, room, token))
+
+def cleanup_pvp_rooms(max_age_seconds=900):
+    now = time.time()
+    expired_codes = []
+    for code, room in PVP_ROOMS.items():
+        age = now - room.get("created_at", now)
+        if room.get("status") == "waiting" and age > max_age_seconds:
+            expired_codes.append(code)
+        elif room.get("status") == "playing" and age > 3600:
+            expired_codes.append(code)
+    for code in expired_codes:
+        room = PVP_ROOMS.pop(code, None)
+        if room:
+            cancel_pvp_turn_timers(room)
+
+def make_pvp_code():
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    while True:
+        code = "".join(random.choice(alphabet) for _ in range(5))
+        if code not in PVP_ROOMS:
+            return code
+
+def build_pvp_keyboard(code):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Katıl", callback_data=f"pvp_join:{code}")
+    ]])
+
+def pvp_room_text(room):
+    game = PVP_GAME_CONFIG[room["game"]]
+    return (
+        f"⚔️ **1v1 {game['title']} odası açıldı!**\n\n"
+        f"Oda Kodu: `{room['code']}`\n"
+        f"Kurucu: **{escape_markdown(room['creator_label'])}**\n"
+        f"Bahis: **{format_money(room['bet'])}** Çip\n\n"
+        f"**1v1 Kuralları**\n"
+        f"Bu kanalda 1v1 dışında hiçbir oyun oynamayınız.\n"
+        f"Minimum bahis tutarı **{format_money(MIN_BET_PVP)}**, maksimum bahis tutarı **{format_money(MAX_BET_PVP)}** dir.\n"
+        f"Yapmış olduğunuz bahis, kazandığınız/kaybettiğiniz takdirde sizin/rakibinizin bakiyesinden düşer.\n"
+        f"Casino oyun başına **{format_rate_percent(PVP_COMMISSION_RATE)}** güvence bedeli komisyon alır.\n"
+        f"Kazanılacak tutar, **x{PVP_PAYOUT_MULTIPLIER:g}** katıdır.\n\n"
+        f"Sırası gelen oyuncunun her tur için **{PVP_TURN_SECONDS} saniyesi** vardır. "
+        f"**{PVP_TURN_WARNING_SECONDS} saniye** kala etiketlenir; süre dolarsa hükmen kaybeder.\n\n"
+        f"Katılmak için butona bas veya `/oyna {room['code']}` yaz."
+    )
+
+def roll_pvp_dice(creator_label, opponent_label):
+    creator_roll = random.randint(1, 6)
+    opponent_roll = random.randint(1, 6)
+    winner_side = None
+    if creator_roll > opponent_roll:
+        winner_side = "creator"
+    elif opponent_roll > creator_roll:
+        winner_side = "opponent"
+    detail = (
+        f"🎲 **Zar sonucu**\n"
+        f"{escape_markdown(creator_label)}: **{creator_roll}**\n"
+        f"{escape_markdown(opponent_label)}: **{opponent_roll}**"
+    )
+    return winner_side, detail
+
+PVP_21_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def draw_pvp_21_card():
+    return random.choice(PVP_21_RANKS)
+
+def pvp_21_score(cards):
+    total = 0
+    aces = 0
+    for card in cards:
+        if card == "A":
+            total += 11
+            aces += 1
+        elif card in {"J", "Q", "K"}:
+            total += 10
+        else:
+            total += int(card)
+    while total > 21 and aces:
+        total -= 10
+        aces -= 1
+    return total
+
+def pvp_21_cards_text(cards):
+    return " ".join(cards)
+
+def build_pvp_21_keyboard(code):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Kart Çek", callback_data=f"pvp21_hit:{code}"),
+        InlineKeyboardButton("Dur", callback_data=f"pvp21_stand:{code}"),
+    ]])
+
+def build_pvp_21_text(room):
+    active_side = room["active_side"]
+    creator_score = pvp_21_score(room["hands"]["creator"])
+    opponent_score = pvp_21_score(room["hands"]["opponent"])
+    active_label = room["creator_label"] if active_side == "creator" else room["opponent_label"]
+    return (
+        f"🃏 **1v1 21 başladı!**\n\n"
+        f"Oda Kodu: `{room['code']}`\n"
+        f"Bahis: **{format_money(room['bet'])}** Çip | Ödeme: **x{PVP_PAYOUT_MULTIPLIER:g}**\n\n"
+        f"**{escape_markdown(room['creator_label'])}**\n"
+        f"Kartlar: `{pvp_21_cards_text(room['hands']['creator'])}` = **{creator_score}**\n"
+        f"Durum: **{room['states']['creator']}**\n\n"
+        f"**{escape_markdown(room['opponent_label'])}**\n"
+        f"Kartlar: `{pvp_21_cards_text(room['hands']['opponent'])}` = **{opponent_score}**\n"
+        f"Durum: **{room['states']['opponent']}**\n\n"
+        f"Sıra: **{escape_markdown(active_label)}**\n"
+        f"Butonları kullan veya `/cek` / `/kal` yaz."
+    )
+
+def start_pvp_21_round(room, opponent_id, opponent_label, message):
+    room.update({
+        "status": "playing",
+        "opponent_id": opponent_id,
+        "opponent_label": opponent_label,
+        "hands": {
+            "creator": [draw_pvp_21_card(), draw_pvp_21_card()],
+            "opponent": [draw_pvp_21_card(), draw_pvp_21_card()],
+        },
+        "states": {"creator": "oynuyor", "opponent": "bekliyor"},
+        "active_side": "creator",
+        "message_id": message.message_id if message else room.get("message_id"),
+    })
+
+def get_pvp_21_side(room, user_id):
+    if user_id == room.get("creator_id"):
+        return "creator"
+    if user_id == room.get("opponent_id"):
+        return "opponent"
+    return None
+
+def find_active_pvp_21_room(user_id, chat_id=None):
+    for room in PVP_ROOMS.values():
+        if room.get("game") != "yirmibir" or room.get("status") != "playing":
+            continue
+        if chat_id is not None and room.get("chat_id") != chat_id:
+            continue
+        if user_id in {room.get("creator_id"), room.get("opponent_id")}:
+            return room
+    return None
+
+def resolve_pvp_21_winner(room):
+    creator_total = pvp_21_score(room["hands"]["creator"])
+    opponent_total = pvp_21_score(room["hands"]["opponent"])
+    creator_score = creator_total if creator_total <= 21 else -1
+    opponent_score = opponent_total if opponent_total <= 21 else -1
+    if creator_score > opponent_score:
+        return "creator"
+    if opponent_score > creator_score:
+        return "opponent"
+    return None
+
+def build_pvp_21_result_text(room, winner_side, payout, reason_text=None):
+    creator_total = pvp_21_score(room["hands"]["creator"])
+    opponent_total = pvp_21_score(room["hands"]["opponent"])
+    detail = (
+        f"🃏 **21 sonucu**\n"
+        f"{escape_markdown(room['creator_label'])}: `{pvp_21_cards_text(room['hands']['creator'])}` = **{creator_total}**\n"
+        f"{escape_markdown(room['opponent_label'])}: `{pvp_21_cards_text(room['hands']['opponent'])}` = **{opponent_total}**"
+    )
+    if winner_side is None:
+        return (
+            (f"{reason_text}\n\n" if reason_text else "") +
+            f"🤝 **Berabere! Bahisler iade edildi.**\n\n"
+            f"{detail}\n\n"
+            f"💳 İade: **{format_money(room['bet'])}** Çip"
+        )
+    winner_label = room["creator_label"] if winner_side == "creator" else room["opponent_label"]
+    return (
+        (f"{reason_text}\n\n" if reason_text else "") +
+        f"🏆 **Kazanan: {escape_markdown(winner_label)}**\n\n"
+        f"{detail}\n\n"
+        f"Bahis: **{format_money(room['bet'])}** Çip\n"
+        f"Ödeme: **{format_money(payout)}** Çip (x{PVP_PAYOUT_MULTIPLIER:g})\n"
+        f"Casino komisyonu: **{format_rate_percent(PVP_COMMISSION_RATE)}**"
+    )
+
+async def finish_pvp_21_room(context, room, forced_winner_side=None, reason_text=None):
+    if room.get("finished"):
+        return
+    room["finished"] = True
+    cancel_pvp_turn_timers(room)
+    winner_side = forced_winner_side if forced_winner_side is not None else resolve_pvp_21_winner(room)
+    payout = int(room["bet"] * PVP_PAYOUT_MULTIPLIER)
+    game = PVP_GAME_CONFIG["yirmibir"]
+    if winner_side is None:
+        update_balance(room["creator_id"], room["bet"])
+        update_balance(room["opponent_id"], room["bet"])
+        update_game_stats(game["stats_type"], room["bet"] * 2, room["bet"] * 2, False)
+    else:
+        winner_id = room["creator_id"] if winner_side == "creator" else room["opponent_id"]
+        update_balance(winner_id, payout)
+        update_game_stats(game["stats_type"], room["bet"] * 2, payout, True)
+    result_text = build_pvp_21_result_text(room, winner_side, payout, reason_text=reason_text)
+    PVP_ROOMS.pop(room["code"], None)
+    try:
+        await context.bot.edit_message_text(chat_id=room["chat_id"], message_id=room["message_id"], text=result_text, parse_mode="Markdown")
+    except Exception:
+        await safe_send_message(context, room["chat_id"], result_text, parse_mode="Markdown", message_thread_id=room.get("thread_id"))
+
+async def update_pvp_21_message(context, room):
+    await context.bot.edit_message_text(
+        chat_id=room["chat_id"],
+        message_id=room["message_id"],
+        text=build_pvp_21_text(room),
+        parse_mode="Markdown",
+        reply_markup=build_pvp_21_keyboard(room["code"]),
+    )
+
+async def handle_pvp_21_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action, code=None):
+    user = update.effective_user
+    remember_user(user)
+    query = update.callback_query
+    is_callback = query is not None
+    message = query.message if is_callback else update.message
+    room = PVP_ROOMS.get(str(code).upper()) if code else find_active_pvp_21_room(user.id, update.effective_chat.id)
+    if room is None or room.get("game") != "yirmibir" or room.get("status") != "playing":
+        text = "Aktif 21 oyunun bulunamadı."
+        if is_callback:
+            await safe_query_answer(query, text, show_alert=True)
+        else:
+            await message.reply_text(text, message_thread_id=getattr(message, "message_thread_id", None))
+        return
+    side = get_pvp_21_side(room, user.id)
+    if side is None:
+        if is_callback:
+            await safe_query_answer(query, "Bu oyunda oyuncu değilsin.", show_alert=True)
+        return
+    if room.get("active_side") != side:
+        active_label = room["creator_label"] if room.get("active_side") == "creator" else room["opponent_label"]
+        text = f"Sıra {active_label} oyuncusunda."
+        if is_callback:
+            await safe_query_answer(query, text, show_alert=True)
+        else:
+            await message.reply_text(text, message_thread_id=getattr(message, "message_thread_id", None))
+        return
+    cancel_pvp_turn_timers(room)
+    if action == "hit":
+        room["hands"][side].append(draw_pvp_21_card())
+        if pvp_21_score(room["hands"][side]) > 21:
+            room["states"][side] = "battı"
+            await finish_pvp_21_room(context, room)
+        else:
+            await update_pvp_21_message(context, room)
+            start_pvp_turn_timer(context, room)
+    elif action == "stand":
+        room["states"][side] = "durdu"
+        if side == "creator":
+            room["active_side"] = "opponent"
+            room["states"]["opponent"] = "oynuyor"
+            await update_pvp_21_message(context, room)
+            start_pvp_turn_timer(context, room)
+        else:
+            await finish_pvp_21_room(context, room)
+    if is_callback:
+        await safe_query_answer(query, "Hamle alındı.", show_alert=False)
+    elif room.get("code") in PVP_ROOMS:
+        await message.reply_text("Hamle alındı.", message_thread_id=getattr(message, "message_thread_id", None))
+
+async def pvp_21_hit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1] if query and query.data else ""
+    await handle_pvp_21_action(update, context, "hit", code)
+
+async def pvp_21_stand_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1] if query and query.data else ""
+    await handle_pvp_21_action(update, context, "stand", code)
+
+async def pvp_21_hit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_pvp_21_action(update, context, "hit")
+
+async def pvp_21_stand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_pvp_21_action(update, context, "stand")
+
+PVP_GAME_CONFIG = {
+    "zar": {"title": "Zar", "stats_type": "pvp_zar", "resolver": roll_pvp_dice},
+    "yirmibir": {"title": "21", "stats_type": "pvp_yirmibir", "resolver": None},
+    "xox": {"title": "6x6 XOX", "stats_type": "pvp_xox", "resolver": None},
+}
+
+async def create_pvp_room(update: Update, context: ContextTypes.DEFAULT_TYPE, game_key):
+    user_id = update.effective_user.id
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+    if not context.args:
+        await update.message.reply_text(f"❌ Kullanım: `/{game_key} [Miktar]`\nMin {format_money(MIN_BET_PVP)} | Max {format_money(MAX_BET_PVP)}", parse_mode="Markdown", message_thread_id=thread_id)
+        return
+    bet = parse_money(context.args[0])
+    if bet is None or bet < MIN_BET_PVP or bet > MAX_BET_PVP:
+        await update.message.reply_text(f"❌ Geçersiz bahis! 1v1 oyunlarda **{format_money(MIN_BET_PVP)}** ile **{format_money(MAX_BET_PVP)}** arası oynayabilirsin.", parse_mode="Markdown", message_thread_id=thread_id)
+        return
+    if get_balance(user_id) < bet:
+        await update.message.reply_text("❌ **Bakiyen yetersiz!**", parse_mode="Markdown", message_thread_id=thread_id)
+        return
+    cleanup_pvp_rooms()
+    code = make_pvp_code()
+    room = {
+        "code": code,
+        "game": game_key,
+        "creator_id": user_id,
+        "creator_label": get_user_label(update.effective_user),
+        "bet": bet,
+        "chat_id": update.effective_chat.id,
+        "thread_id": thread_id,
+        "created_at": time.time(),
+        "status": "waiting",
+    }
+    PVP_ROOMS[code] = room
+    sent_message = await update.message.reply_text(pvp_room_text(room), parse_mode="Markdown", reply_markup=build_pvp_keyboard(code), message_thread_id=thread_id)
+    room["message_id"] = sent_message.message_id
+
+async def play_pvp_dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await create_pvp_room(update, context, "zar")
+
+async def play_pvp_21(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await create_pvp_room(update, context, "yirmibir")
+
+async def play_pvp_xox(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await create_pvp_room(update, context, "xox")
+
+async def join_pvp_room(update: Update, context: ContextTypes.DEFAULT_TYPE, code=None):
+    user = update.effective_user
+    remember_user(user)
+    is_callback = update.callback_query is not None
+    query = update.callback_query
+    message = query.message if is_callback else update.message
+    thread_id = getattr(message, "message_thread_id", None)
+    if code is None:
+        if not context.args:
+            await message.reply_text("❌ Kullanım: `/oyna [OdaKodu]`", parse_mode="Markdown", message_thread_id=thread_id)
+            return
+        code = context.args[0]
+    code = str(code).upper().strip()
+    cleanup_pvp_rooms()
+    room = PVP_ROOMS.get(code)
+    if room is None or room.get("status") != "waiting":
+        text = "❌ Oda bulunamadı veya oyun zaten başladı."
+        if is_callback:
+            await safe_query_answer(query, text, show_alert=True)
+        else:
+            await message.reply_text(text, message_thread_id=thread_id)
+        return
+    if user.id == room["creator_id"]:
+        text = "❌ Kendi açtığın odaya katılamazsın."
+        if is_callback:
+            await safe_query_answer(query, text, show_alert=True)
+        else:
+            await message.reply_text(text, message_thread_id=thread_id)
+        return
+    if get_balance(room["creator_id"]) < room["bet"]:
+        PVP_ROOMS.pop(code, None)
+        text = "❌ Kurucunun bakiyesi artık yetersiz. Oda kapatıldı."
+        if is_callback:
+            await safe_query_answer(query, text, show_alert=True)
+            await query.edit_message_text(text)
+        else:
+            await message.reply_text(text, message_thread_id=thread_id)
+        return
+    if get_balance(user.id) < room["bet"]:
+        text = "❌ Bakiyen bu odaya katılmak için yetersiz."
+        if is_callback:
+            await safe_query_answer(query, text, show_alert=True)
+        else:
+            await message.reply_text(text, message_thread_id=thread_id)
+        return
+    room["status"] = "playing"
+    opponent_label = get_user_label(user)
+    update_balance(room["creator_id"], -room["bet"])
+    update_balance(user.id, -room["bet"])
+    game = PVP_GAME_CONFIG[room["game"]]
+    if room["game"] == "yirmibir":
+        start_pvp_21_round(room, user.id, opponent_label, message)
+        result_text = build_pvp_21_text(room)
+        if is_callback:
+            await safe_query_answer(query, "21 başladı!", show_alert=False)
+            await query.edit_message_text(result_text, parse_mode="Markdown", reply_markup=build_pvp_21_keyboard(code))
+            room["message_id"] = query.message.message_id
+        else:
+            sent_message = await message.reply_text(result_text, parse_mode="Markdown", reply_markup=build_pvp_21_keyboard(code), message_thread_id=thread_id)
+            room["message_id"] = sent_message.message_id
+        start_pvp_turn_timer(context, room)
+        return
+    if room["game"] == "xox":
+        start_pvp_xox_round(room, user.id, opponent_label)
+        result_text = build_xox_text(room)
+        if is_callback:
+            await safe_query_answer(query, "XOX başladı!", show_alert=False)
+            await query.edit_message_text(result_text, parse_mode="Markdown", reply_markup=build_xox_keyboard(room))
+            room["message_id"] = query.message.message_id
+        else:
+            sent_message = await message.reply_text(result_text, parse_mode="Markdown", reply_markup=build_xox_keyboard(room), message_thread_id=thread_id)
+            room["message_id"] = sent_message.message_id
+        start_pvp_turn_timer(context, room)
+        return
+    winner_side, detail = game["resolver"](room["creator_label"], opponent_label)
+    payout = int(room["bet"] * PVP_PAYOUT_MULTIPLIER)
+    if winner_side is None:
+        update_balance(room["creator_id"], room["bet"])
+        update_balance(user.id, room["bet"])
+        result_text = f"🤝 **Berabere! Bahisler iade edildi.**\n\n{detail}\n\n💳 İade: **{format_money(room['bet'])}** Çip"
+        update_game_stats(game["stats_type"], room["bet"] * 2, room["bet"] * 2, False)
+    else:
+        winner_id = room["creator_id"] if winner_side == "creator" else user.id
+        winner_label = room["creator_label"] if winner_side == "creator" else opponent_label
+        update_balance(winner_id, payout)
+        result_text = (
+            f"🏆 **Kazanan: {escape_markdown(winner_label)}**\n\n{detail}\n\n"
+            f"Bahis: **{format_money(room['bet'])}** Çip\n"
+            f"Ödeme: **{format_money(payout)}** Çip (x{PVP_PAYOUT_MULTIPLIER:g})\n"
+            f"Casino komisyonu: **{format_rate_percent(PVP_COMMISSION_RATE)}**"
+        )
+        update_game_stats(game["stats_type"], room["bet"] * 2, payout, True)
+    PVP_ROOMS.pop(code, None)
+    if is_callback:
+        await safe_query_answer(query, "Oyun başladı!", show_alert=False)
+        await query.edit_message_text(result_text, parse_mode="Markdown")
+    else:
+        await message.reply_text(result_text, parse_mode="Markdown", message_thread_id=thread_id)
+
+async def join_pvp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    code = query.data.split(":", 1)[1] if query and query.data else ""
+    await join_pvp_room(update, context, code)
+
+async def join_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await join_pvp_room(update, context)
+
+def build_xox_keyboard(room):
+    rows = []
+    board = room["xox_board"]
+    for row in range(XOX_SIZE):
+        buttons = []
+        for col in range(XOX_SIZE):
+            index = row * XOX_SIZE + col
+            buttons.append(InlineKeyboardButton(board[index], callback_data=f"xox6:{room['code']}:{index}"))
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows)
+
+def start_pvp_xox_round(room, opponent_id, opponent_label):
+    room.update({
+        "status": "playing",
+        "opponent_id": opponent_id,
+        "opponent_label": opponent_label,
+        "xox_board": [XOX_EMPTY] * (XOX_SIZE * XOX_SIZE),
+        "xox_turn": "X",
+        "xox_players": {"X": room["creator_id"], "O": opponent_id},
+        "xox_labels": {room["creator_id"]: room["creator_label"], opponent_id: opponent_label},
+    })
+
+def get_xox_symbol(room, user_id):
+    for symbol, player_id in room["xox_players"].items():
+        if player_id == user_id:
+            return symbol
+    return None
+
+def xox_player_label(room, symbol):
+    player_id = room["xox_players"].get(symbol)
+    if not player_id:
+        return symbol
+    return room["xox_labels"].get(player_id, symbol)
+
+def check_xox6_winner(board):
+    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+    for row in range(XOX_SIZE):
+        for col in range(XOX_SIZE):
+            symbol = board[row * XOX_SIZE + col]
+            if symbol == XOX_EMPTY:
+                continue
+            for dr, dc in directions:
+                cells = []
+                for step in range(4):
+                    nr = row + dr * step
+                    nc = col + dc * step
+                    if nr < 0 or nr >= XOX_SIZE or nc < 0 or nc >= XOX_SIZE:
+                        break
+                    cells.append(board[nr * XOX_SIZE + nc])
+                if len(cells) == 4 and all(cell == symbol for cell in cells):
+                    return symbol
+    if XOX_EMPTY not in board:
+        return "draw"
+    return None
+
+def build_xox_text(room):
+    turn_label = xox_player_label(room, room["xox_turn"])
+    x_label = xox_player_label(room, "X")
+    o_label = xox_player_label(room, "O")
+    return (
+        f"❌⭕ **6x6 XOX**\n\n"
+        f"Oda Kodu: `{room['code']}`\n"
+        f"Bahis: **{format_money(room['bet'])}** Çip | Ödeme: **x{PVP_PAYOUT_MULTIPLIER:g}**\n\n"
+        f"X: **{escape_markdown(x_label)}**\n"
+        f"O: **{escape_markdown(o_label)}**\n\n"
+        f"Sıra: **{room['xox_turn']}** - {escape_markdown(turn_label)}\n"
+        f"4 tane aynı sembolü yatay, dikey veya çapraz denk getiren kazanır."
+    )
+
+async def start_xox6(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await play_pvp_xox(update, context)
+
+async def finish_pvp_xox_room(context, room, winner_symbol, reason_text=None):
+    if room.get("finished"):
+        return
+    room["finished"] = True
+    cancel_pvp_turn_timers(room)
+    payout = int(room["bet"] * PVP_PAYOUT_MULTIPLIER)
+    game = PVP_GAME_CONFIG["xox"]
+    if winner_symbol is None:
+        update_balance(room["creator_id"], room["bet"])
+        update_balance(room["opponent_id"], room["bet"])
+        update_game_stats(game["stats_type"], room["bet"] * 2, room["bet"] * 2, False)
+        text = (
+            (f"{reason_text}\n\n" if reason_text else "") +
+            f"🤝 **6x6 XOX berabere bitti. Bahisler iade edildi.**\n\n💳 İade: **{format_money(room['bet'])}** Çip"
+        )
+    else:
+        winner_id = room["xox_players"][winner_symbol]
+        winner_label = xox_player_label(room, winner_symbol)
+        update_balance(winner_id, payout)
+        update_game_stats(game["stats_type"], room["bet"] * 2, payout, True)
+        text = (
+            (f"{reason_text}\n\n" if reason_text else "") +
+            f"🏆 **{winner_symbol} kazandı: {escape_markdown(winner_label)}**\n\n"
+            f"Bahis: **{format_money(room['bet'])}** Çip\n"
+            f"Ödeme: **{format_money(payout)}** Çip (x{PVP_PAYOUT_MULTIPLIER:g})\n"
+            f"Casino komisyonu: **{format_rate_percent(PVP_COMMISSION_RATE)}**"
+        )
+    PVP_ROOMS.pop(room["code"], None)
+    try:
+        await context.bot.edit_message_text(chat_id=room["chat_id"], message_id=room["message_id"], text=text, parse_mode="Markdown")
+    except Exception:
+        await safe_send_message(context, room["chat_id"], text, parse_mode="Markdown", message_thread_id=room.get("thread_id"))
+
+async def xox6_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    parts = query.data.split(":") if query and query.data else []
+    if len(parts) != 3:
+        await safe_query_answer(query, "Bu eski XOX butonu artık geçersiz.", show_alert=True)
+        return
+    code = parts[1].upper()
+    room = PVP_ROOMS.get(code)
+    if room is None or room.get("game") != "xox" or room.get("status") != "playing":
+        await safe_query_answer(query, "Bu XOX oyunu bulunamadı veya bitti.", show_alert=True)
+        return
+    symbol = get_xox_symbol(room, query.from_user.id)
+    if symbol is None:
+        await safe_query_answer(query, "Bu oyunda oyuncu değilsin.", show_alert=True)
+        return
+    if symbol != room["xox_turn"]:
+        await safe_query_answer(query, f"Sıra {room['xox_turn']} oyuncusunda.", show_alert=True)
+        return
+    index = int(parts[2])
+    if room["xox_board"][index] != XOX_EMPTY:
+        await safe_query_answer(query, "Bu kutu dolu.", show_alert=True)
+        return
+    cancel_pvp_turn_timers(room)
+    room["xox_board"][index] = symbol
+    result = check_xox6_winner(room["xox_board"])
+    if result == "draw":
+        await safe_query_answer(query, "Hamle alındı.", show_alert=False)
+        await finish_pvp_xox_room(context, room, None)
+        return
+    if result:
+        await safe_query_answer(query, "Hamle alındı.", show_alert=False)
+        await finish_pvp_xox_room(context, room, result)
+        return
+    room["xox_turn"] = "O" if room["xox_turn"] == "X" else "X"
+    await query.edit_message_text(build_xox_text(room), parse_mode="Markdown", reply_markup=build_xox_keyboard(room))
+    start_pvp_turn_timer(context, room)
+    await safe_query_answer(query, "Hamle alındı.", show_alert=False)
+
 def get_forced_mode_label():
     forced_win_rate = get_house_state().get("forced_win_rate")
     if forced_win_rate is None:
@@ -2637,7 +3300,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message else None
     total_games = 1000
     bet = MIN_BET_LCDP
-    games = ACTIVE_GAME_TYPES
+    games = NORMAL_GAME_TYPES
     requested_game = context.args[0].lower().strip() if context.args else "all"
     selected_game = TEST_GAME_ALIASES.get(requested_game)
     if selected_game is None:
@@ -2839,6 +3502,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/lcdp [Miktar]` (Min {format_money(MIN_BET_LCDP)} | Max {format_money(MAX_BET_LCDP)})\n"
         f"• `/lcdp [Miktar] freespin` veya `/lcdpfs [Miktar]` (Min {format_money(MIN_LCDP_FREE_SPIN_BUY)} | Max {format_money(MAX_LCDP_FREE_SPIN_BUY)})\n\n"
         f"• `/aviator [Miktar] [Oto Çıkış]` (Bahisten 20 sn sonra ortak tur | Min {format_money(MIN_BET_AVIATOR)} | Max {format_money(MAX_BET_AVIATOR)} | Örn: `/aviator 10t 2x`)\n"
+        f"• `/zar [Miktar]` - Bahisli 1v1 zar odası açar (Min {format_money(MIN_BET_PVP)} | Max {format_money(MAX_BET_PVP)} | Kazanç x{PVP_PAYOUT_MULTIPLIER:g})\n"
+        f"• `/yirmibir [Miktar]` veya `/21 [Miktar]` - Butonlu 1v1 21 odası açar (`/cek`, `/kal`)\n"
+        f"• `/xox [Miktar]` - Bahisli 1v1 6x6 XOX açar; 4'lü yatay/dikey/çapraz kazandırır\n"
+        f"• `/oyna [OdaKodu]` - Açık 1v1 odasına katılır\n"
         f"💡 *Bahislerde t, kt kısaltmalarını kullanabilirsin. (Örn: /slot 20t)*\n\n"
         f"🛠️ **Genel:**\n"
         f"• `/bakiye` - Mevcut çipini gösterir\n"
@@ -2870,7 +3537,8 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"• `/krediodendi [TalepNo]` - Krediyi ödendi işaretler\n"
         f"• `/krediodenmedi [TalepNo]` - Krediyi ödenmedi işaretler\n"
         f"• `/kredisil [TalepNo]` - Kredi kaydını listeden siler\n"
-        f"• `/panel` - Kasa ve oyun verilerini gösterir\n"
+        f"• `/panel` - Normal oyunların kasa ve oyun verilerini gösterir\n"
+        f"• `/panel1` veya `/panel 1` - 1v1 oyunların kasa ve oyun verilerini gösterir\n"
         f"• `/mod normal` - Yüzdeli modu kapatır\n"
         f"• `/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35` - Yüzdeli test modunu ayarlar\n"
         f"• `/test [oyun]` - 1000 oyun simülasyonu yapar\n"
@@ -3569,7 +4237,7 @@ async def remove_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYP
     update_admin_balance_totals(target_id, removed=amount)
     await update.message.reply_text(f"📉 `{target_id}` ID'li kullanıcıdan **{format_money(amount)}** çip silindi.", parse_mode="Markdown", message_thread_id=thread_id)
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_admin_panel(update: Update, game_types, panel_title):
     if update.effective_user.id not in ADMIN_IDS: return
     thread_id = update.message.message_thread_id if update.message else None
     
@@ -3578,10 +4246,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT COUNT(user_id), SUM(balance) FROM users")
     user_stats = cursor.fetchone()
     
-    placeholders = ",".join("?" for _ in ACTIVE_GAME_TYPES)
+    placeholders = ",".join("?" for _ in game_types)
     cursor.execute(
         f"SELECT game_type, total_games, winning_games, total_wagered, total_paid FROM game_stats WHERE game_type IN ({placeholders})",
-        ACTIVE_GAME_TYPES
+        game_types
     )
     game_rows = cursor.fetchall()
     conn.close()
@@ -3595,7 +4263,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     panel_text = (
-        f"📊 **CASINO ADMİN PANELİ** 📊\n\n"
+        f"📊 **{panel_title}** 📊\n\n"
         f"👥 **Genel Bilgiler:**\n"
         f"• Kayıtlı Oyuncu: {toplam_oyuncu}\n"
         f"• Piyasadaki Toplam Çip: {format_money(piyasadaki_cip)}\n"
@@ -3621,10 +4289,33 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_net = g_wag - g_paid
         g_loss = g_total - g_win
         
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️", "aviator": "✈️"}.get(g_type, "🎮")
+        icon = {
+            "slot": "🎰",
+            "dart": "🎯",
+            "bowling": "🎳",
+            "atyarisi": "🐎",
+            "roulette": "🎡",
+            "lcdp": "🏛️",
+            "aviator": "✈️",
+            "pvp_zar": "🎲",
+            "pvp_yirmibir": "🃏",
+            "pvp_xox": "❌⭕",
+        }.get(g_type, "🎮")
+        game_label = {
+            "slot": "SLOT",
+            "dart": "DART",
+            "bowling": "BOWLING",
+            "atyarisi": "AT YARIŞI",
+            "roulette": "RULET",
+            "lcdp": "LCDP",
+            "aviator": "AVIATOR",
+            "pvp_zar": "1V1 ZAR",
+            "pvp_yirmibir": "1V1 21",
+            "pvp_xox": "1V1 XOX",
+        }.get(g_type, g_type.upper().replace("_", " "))
         
         panel_text += (
-            f"{icon} **{g_type.upper()} İSTATİSTİKLERİ:**\n"
+            f"{icon} **{game_label} İSTATİSTİKLERİ:**\n"
             f"Oyun: {g_total} | Kazandı/Kaybetti: {g_win}/{g_loss} | Kazanç: %{g_win_rate:.1f} | RTP: %{g_rtp:.1f}\n"
             f"Kasa Karı: {format_money(g_net)}\n\n"
         )
@@ -3646,6 +4337,16 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(panel_text, parse_mode="Markdown", message_thread_id=thread_id)
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message_text = update.message.text.strip() if update.message and update.message.text else ""
+    if (context.args and context.args[0].strip() == "1") or message_text.lower().replace("/", "").replace(" ", "") == "panel1":
+        await admin_pvp_panel(update, context)
+        return
+    await send_admin_panel(update, NORMAL_GAME_TYPES, "NORMAL OYUNLAR PANELİ")
+
+async def admin_pvp_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_admin_panel(update, PVP_GAME_TYPES, "1V1 OYUNLAR PANELİ")
 
 async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = update.effective_user.id in ADMIN_IDS
@@ -3704,9 +4405,32 @@ async def user_info_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         win_rate = (wins / games * 100) if games else 0
         losses = games - wins
         net = wagered - paid
-        icon = {"slot": "🎰", "dart": "🎯", "bowling": "🎳", "atyarisi": "🐎", "roulette": "🎡", "lcdp": "🏛️", "aviator": "✈️"}.get(game_type, "🎮")
+        icon = {
+            "slot": "🎰",
+            "dart": "🎯",
+            "bowling": "🎳",
+            "atyarisi": "🐎",
+            "roulette": "🎡",
+            "lcdp": "🏛️",
+            "aviator": "✈️",
+            "pvp_zar": "🎲",
+            "pvp_yirmibir": "🃏",
+            "pvp_xox": "❌⭕",
+        }.get(game_type, "🎮")
+        game_label = {
+            "slot": "SLOT",
+            "dart": "DART",
+            "bowling": "BOWLING",
+            "atyarisi": "AT YARIŞI",
+            "roulette": "RULET",
+            "lcdp": "LCDP",
+            "aviator": "AVIATOR",
+            "pvp_zar": "1V1 ZAR",
+            "pvp_yirmibir": "1V1 21",
+            "pvp_xox": "1V1 XOX",
+        }.get(game_type, game_type.upper().replace("_", " "))
         detail_text += (
-            f"{icon} **{game_type.upper()}**\n"
+            f"{icon} **{game_label}**\n"
             f"Oyun: {games} | Kazandı/Kaybetti: {wins}/{losses} | Kazanç: %{win_rate:.1f}\n"
             f"Yatırılan/Oynanan: {format_money(wagered)} | Kazanılan: {format_money(paid)}\n"
             f"Kasa Net: {format_money(net)}\n\n"
@@ -3815,6 +4539,13 @@ async def main():
     application.add_handler(CommandHandler("rulet", play_roulette))
     application.add_handler(CommandHandler("lcdp", play_lcdp))
     application.add_handler(CommandHandler("lcdpfs", buy_lcdp_free_spin))
+    application.add_handler(CommandHandler("zar", play_pvp_dice))
+    application.add_handler(CommandHandler("yirmibir", play_pvp_21))
+    application.add_handler(CommandHandler("21", play_pvp_21))
+    application.add_handler(CommandHandler("xox", start_xox6))
+    application.add_handler(CommandHandler("oyna", join_pvp_command))
+    application.add_handler(CommandHandler("cek", pvp_21_hit_command))
+    application.add_handler(CommandHandler("kal", pvp_21_stand_command))
     application.add_handler(CommandHandler("aviator", play_aviator))
     application.add_handler(CommandHandler("av", play_aviator))
     application.add_handler(CommandHandler("avbaslat", force_start_aviator_admin))
@@ -3826,12 +4557,18 @@ async def main():
     application.add_handler(CommandHandler("avpromo", aviator_promo_admin))
     application.add_handler(CommandHandler("avvoid", aviator_void_admin))
     application.add_handler(CallbackQueryHandler(aviator_cashout_callback, pattern=r"^aviator_cashout:"))
+    application.add_handler(CallbackQueryHandler(pvp_21_hit_callback, pattern=r"^pvp21_hit:"))
+    application.add_handler(CallbackQueryHandler(pvp_21_stand_callback, pattern=r"^pvp21_stand:"))
+    application.add_handler(CallbackQueryHandler(join_pvp_callback, pattern=r"^pvp_join:"))
+    application.add_handler(CallbackQueryHandler(xox6_callback, pattern=r"^xox6:"))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdp$"), play_lcdp))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdp\s+\S+"), play_lcdp))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdpfs$"), buy_lcdp_free_spin))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^lcdpfs\s+\S+"), buy_lcdp_free_spin))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^(aviator|av)$"), play_aviator))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^(aviator|av)\s+\S+"), play_aviator))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^/çek(@\w+)?(?:\s|$)"), pvp_21_hit_command))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^/?panel(?:@\w+)?\s*1\s*$|^/?panel1(?:@\w+)?\s*$"), admin_pvp_panel))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("kreditalep", credit_request_command))
@@ -3850,6 +4587,7 @@ async def main():
     application.add_handler(CommandHandler("bakiyeekle", add_balance_admin))
     application.add_handler(CommandHandler("bakiyesil", remove_balance_admin))
     application.add_handler(CommandHandler("panel", admin_panel))
+    application.add_handler(CommandHandler("panel1", admin_pvp_panel))
     application.add_handler(CommandHandler("mod", house_mode_admin))
     application.add_handler(CommandHandler("bilgi", user_info_admin))
     application.add_handler(CommandHandler("panelsifirla", reset_panel_admin))
