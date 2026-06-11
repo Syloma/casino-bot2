@@ -89,7 +89,7 @@ HORSE_CONFIG = {
     2: {"name": "astral", "chance": 25, "multiplier": 2, "loss_message": "Astral kaybetti. Bana bastınız daha çok basın"},
     3: {"name": "ziyan", "chance": 15, "multiplier": 3, "loss_message": "Ziyan kaybetti. Yine ziyan oldu hayaller"},
     4: {"name": "jester", "chance": 12, "multiplier": 4, "loss_message": "Jester kaybetti. Daha 14 yaşındayım"},
-    5: {"name": "emrah", "chance": 8, "multiplier": 6, "loss_message": "Emrah kaybetti. Koşamadım çünkü anamı kaybettim"},
+    5: {"name": "rüştü", "chance": 8, "multiplier": 6, "loss_message": "Rüştü kaybetti. Yakşamlar gene düştü"},
     6: {"name": "Gölge", "chance": 2.5, "multiplier": 8},
     7: {"name": "Morning", "chance": 0.5, "multiplier": 50},
     8: {"name": "Roket", "chance": 2, "multiplier": 20},
