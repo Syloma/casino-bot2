@@ -545,6 +545,62 @@ def set_setting(key, value):
     conn.commit()
     conn.close()
 
+USER_FORCED_WIN_RATE_PREFIX = "forced_win_rate_user_"
+
+def get_user_forced_win_rate(user_id):
+    if user_id is None:
+        return None
+    return parse_percent(get_setting(f"{USER_FORCED_WIN_RATE_PREFIX}{int(user_id)}"))
+
+def set_user_forced_win_rate(user_id, forced_win_rate):
+    set_setting(
+        f"{USER_FORCED_WIN_RATE_PREFIX}{int(user_id)}",
+        None if forced_win_rate is None else format_percent(forced_win_rate)
+    )
+
+def get_user_forced_modes(limit=20):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT key, value
+        FROM settings
+        WHERE key LIKE ?
+        ORDER BY key
+        LIMIT ?
+        """,
+        (f"{USER_FORCED_WIN_RATE_PREFIX}%", limit)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    modes = []
+    for key, value in rows:
+        try:
+            user_id = int(key.replace(USER_FORCED_WIN_RATE_PREFIX, "", 1))
+        except ValueError:
+            continue
+        percent = parse_percent(value)
+        if percent is not None:
+            modes.append((user_id, percent))
+    return modes
+
+def apply_user_forced_mode(house_state, user_id):
+    user_forced_win_rate = get_user_forced_win_rate(user_id)
+    if user_forced_win_rate is None:
+        return house_state
+    user_house_state = dict(house_state)
+    user_house_state["forced_win_rate"] = user_forced_win_rate
+    user_house_state["user_forced_win_rate"] = user_forced_win_rate
+    return user_house_state
+
+def format_forced_mode_percent(forced_win_rate):
+    if forced_win_rate >= 100:
+        return "%100 kazan"
+    if forced_win_rate <= 0:
+        return "%100 kaybet"
+    return f"%{format_percent(forced_win_rate)} kazan / %{format_percent(100 - forced_win_rate)} kaybet"
+
 def parse_percent(value):
     try:
         percent = float(str(value).replace("%", "").strip())
@@ -602,7 +658,8 @@ def get_house_state(candidate_payout=0):
         "forced_win_rate": forced_win_rate,
     }
 
-def decide_forced_win(house_state):
+def decide_forced_win(house_state, user_id=None):
+    house_state = apply_user_forced_mode(house_state, user_id)
     forced_win_rate = house_state.get("forced_win_rate")
     if forced_win_rate is None:
         return None
@@ -618,9 +675,9 @@ def get_forced_weight_factor(house_state):
         return 1.0
     return forced_win_rate / (100 - forced_win_rate)
 
-def choose_roulette_outcome(selected_config, bet):
+def choose_roulette_outcome(selected_config, bet, user_id=None):
     candidate_payout = int(bet * selected_config["multiplier"])
-    house_state = get_house_state(candidate_payout)
+    house_state = apply_user_forced_mode(get_house_state(candidate_payout), user_id)
     forced_win = decide_forced_win(house_state)
     if forced_win is True:
         return next(item for item in ROULETTE_OUTCOMES if item["label"] == selected_config["label"])
@@ -637,10 +694,10 @@ def choose_roulette_outcome(selected_config, bet):
         weights.append(weight)
     return random.choices(ROULETTE_OUTCOMES, weights=weights, k=1)[0]
 
-def choose_horse_winner(selected_horse, bet):
+def choose_horse_winner(selected_horse, bet, user_id=None):
     selected_multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
     candidate_payout = int(bet * selected_multiplier)
-    house_state = get_house_state(candidate_payout)
+    house_state = apply_user_forced_mode(get_house_state(candidate_payout), user_id)
     forced_win = decide_forced_win(house_state)
     if forced_win is True:
         return selected_horse
@@ -689,11 +746,17 @@ def build_house_mode_text():
                 f"Yüzdeli ağırlık aktif: **%{format_percent(forced_win_rate)} kazanma tarafı** "
                 f"| **%{format_percent(100 - forced_win_rate)} kaybetme tarafı**"
             )
+    user_mode_lines = [
+        f"- `{user_id}`: {format_forced_mode_percent(percent)}"
+        for user_id, percent in get_user_forced_modes()
+    ]
+    user_modes_text = "\n".join(user_mode_lines) if user_mode_lines else "Aktif id bazli mod yok."
     return (
         f"🧭 **KASA MODU**\n\n"
         f"Durum: **{mode_label}**\n"
         f"{mode_desc}\n\n"
         f"🎛️ Kontrol: {control_text}\n"
+        f"Id bazli modlar:\n{user_modes_text}\n\n"
         f"🎯 Etkilenen oyunlar: **At Yarışı, Rulet, LCDP**\n"
         f"🎲 Slot/Dart/Bowling: Telegram sonucu değişmediği için mod dışı\n\n"
         f"💰 Toplam Yatırılan: **{format_money(house_state['total_added'])}**\n"
@@ -702,7 +765,8 @@ def build_house_mode_text():
         f"📊 Limit Kullanımı: **%{limit_usage:.1f}**\n"
         f"`{usage_bar}`\n\n"
         f"`/mod normal` yüzdeli modu kapatır\n"
-        f"`/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35`"
+        f"`/mod kazan 80`, `/mod kaybet 80`, `/mod oran 35`\n"
+        f"`/mod id 123456 kazan 80`, `/mod id 123456 normal`"
     )
 
 # --- 4. OYUNCU KOMUTLARI VE OYUNLAR ---
@@ -912,7 +976,7 @@ async def play_roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     update_balance(user_id, -bet)
 
-    outcome = choose_roulette_outcome(selected_config, bet)
+    outcome = choose_roulette_outcome(selected_config, bet, user_id)
 
     is_win = outcome["label"] == selected_config["label"]
     win_amount = int(bet * selected_config["multiplier"]) if is_win else 0
@@ -1118,7 +1182,7 @@ async def play_lcdp(update: Update, context: ContextTypes.DEFAULT_TYPE, force_fr
     update_balance(user_id, -charge_amount)
 
     if buy_mode:
-        house_state = get_house_state()
+        house_state = apply_user_forced_mode(get_house_state(), user_id)
         forced_result = decide_forced_win(house_state)
         free_spin_total, free_spin_lines = run_lcdp_free_spins(bet, house_state, forced_result)
         is_win = free_spin_total > 0
@@ -1139,7 +1203,7 @@ async def play_lcdp(update: Update, context: ContextTypes.DEFAULT_TYPE, force_fr
         )
         return
 
-    house_state = get_house_state()
+    house_state = apply_user_forced_mode(get_house_state(), user_id)
     forced_result = decide_forced_win(house_state)
     grid = draw_lcdp_grid_for_result(forced_result)
     best_symbol, best_count, base_multiplier, scatter_count = evaluate_lcdp_spin(grid)
@@ -2525,7 +2589,7 @@ async def play_horse_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await asyncio.sleep(1.2)
-        winner = choose_horse_winner(selected_horse, bet)
+        winner = choose_horse_winner(selected_horse, bet, user_id)
 
         is_win = winner == selected_horse
         multiplier = HORSE_CONFIG[selected_horse]["multiplier"]
@@ -3435,6 +3499,87 @@ async def bakiye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_balance(update.effective_user.id)
     await update.message.reply_text(f"💰 Bakiyen: {format_money(balance)} Çip")
 
+def get_text_mention_user(message):
+    for entity in message.entities or []:
+        if entity.type == "text_mention" and entity.user:
+            return entity.user
+    return None
+
+def get_first_mention_text(message):
+    for entity in message.entities or []:
+        if entity.type != "mention":
+            continue
+        try:
+            return entity.extract_from(message.text)
+        except Exception:
+            return None
+    return None
+
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    thread_id = message.message_thread_id if message else None
+    remember_user(update.effective_user)
+
+    target_user = None
+    target_id = None
+    source = "Komutu yazan"
+
+    if message and message.reply_to_message and message.reply_to_message.from_user:
+        target_user = message.reply_to_message.from_user
+        source = "Yanitlanan mesaj"
+    elif message:
+        target_user = get_text_mention_user(message)
+        if target_user:
+            source = "Etiketlenen kullanici"
+
+    if target_user:
+        remember_user(target_user)
+        target_id = target_user.id
+        display_name = target_user.full_name or target_user.username or str(target_id)
+    else:
+        target_arg = context.args[0].strip() if context.args else None
+        mention_text = get_first_mention_text(message) if message else None
+        if mention_text:
+            target_arg = mention_text
+
+        if target_arg:
+            if target_arg.startswith("@"):
+                target_id = find_user_id_by_username(target_arg)
+                if target_id is None:
+                    await message.reply_text(
+                        f"❌ `{target_arg}` veritabaninda bulunamadi. Kullanici once botla etkilesime girmis olmali.",
+                        parse_mode="Markdown",
+                        message_thread_id=thread_id
+                    )
+                    return
+                display_name = target_arg
+                source = "Username"
+            else:
+                try:
+                    target_id = int(target_arg)
+                except ValueError:
+                    await message.reply_text(
+                        "❌ Kullanım: `/id`, bir mesaja yanıtla `/id`, veya `/id @username`",
+                        parse_mode="Markdown",
+                        message_thread_id=thread_id
+                    )
+                    return
+                display_name = str(target_id)
+                source = "Girilen id"
+        else:
+            target_user = update.effective_user
+            target_id = target_user.id
+            display_name = target_user.full_name or target_user.username or str(target_id)
+
+    await message.reply_text(
+        f"🆔 **ID Bilgisi**\n"
+        f"Kaynak: **{escape_markdown(source)}**\n"
+        f"Kullanici: **{escape_markdown(display_name)}**\n"
+        f"ID: `{target_id}`",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
 async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_id = update.effective_user.id
     remember_user(update.effective_user)
@@ -3595,6 +3740,65 @@ async def house_mode_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message else None
     if context.args:
         requested_mode = context.args[0].lower().strip()
+        if requested_mode in {"id", "user", "kullanici", "kullanıcı"}:
+            if len(context.args) < 2:
+                await update.message.reply_text(
+                    "❌ Kullanım: `/mod id [kullanici_id] kazan 80`, `/mod id [kullanici_id] kaybet 80` veya `/mod id [kullanici_id] normal`",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
+                return
+
+            try:
+                target_user_id = int(context.args[1])
+            except ValueError:
+                await update.message.reply_text("❌ Kullanıcı id sayısal olmalı.", message_thread_id=thread_id)
+                return
+
+            if len(context.args) == 2:
+                user_rate = get_user_forced_win_rate(target_user_id)
+                status = "kapalı" if user_rate is None else format_forced_mode_percent(user_rate)
+                await update.message.reply_text(
+                    f"`{target_user_id}` id bazli mod: **{status}**",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
+                return
+
+            user_mode = context.args[2].lower().strip()
+            if HOUSE_MODE_ALIASES.get(user_mode) == "normal" or user_mode in {"oto", "auto", "kapat", "sil"}:
+                set_user_forced_win_rate(target_user_id, None)
+                await update.message.reply_text(
+                    f"`{target_user_id}` için id bazli mod kapatıldı.\n\n{build_house_mode_text()}",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
+                return
+
+            forced_action = FORCED_MODE_ALIASES.get(user_mode)
+            if not forced_action or len(context.args) < 4:
+                await update.message.reply_text(
+                    "❌ Kullanım: `/mod id [kullanici_id] kazan 80`, `/mod id [kullanici_id] kaybet 80`, `/mod id [kullanici_id] oran 35` veya `/mod id [kullanici_id] normal`",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
+                return
+
+            requested_percent = parse_percent(context.args[3])
+            if requested_percent is None:
+                await update.message.reply_text("❌ Yüzde 0 ile 100 arasında olmalı.", message_thread_id=thread_id)
+                return
+
+            forced_win_rate = 100 - requested_percent if forced_action == "lose" else requested_percent
+            set_user_forced_win_rate(target_user_id, forced_win_rate)
+            await update.message.reply_text(
+                f"`{target_user_id}` için id bazli mod ayarlandı: **{format_forced_mode_percent(forced_win_rate)}**\n\n"
+                f"{build_house_mode_text()}",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+            return
+
         forced_action = FORCED_MODE_ALIASES.get(requested_mode)
         if forced_action:
             if len(context.args) < 2:
@@ -4571,6 +4775,7 @@ async def main():
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^/?panel(?:@\w+)?\s*1\s*$|^/?panel1(?:@\w+)?\s*$"), admin_pvp_panel))
     application.add_handler(CommandHandler("top10", top_players))
     application.add_handler(CommandHandler("bakiye", bakiye))
+    application.add_handler(CommandHandler("id", id_command))
     application.add_handler(CommandHandler("kreditalep", credit_request_command))
     application.add_handler(CommandHandler("transfer", transfer_command))
     application.add_handler(CommandHandler("komut", help_command))
