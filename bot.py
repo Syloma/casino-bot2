@@ -3698,7 +3698,57 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"• `/bakim ac|kapat|durum` - Bot bakım modunu yönetir\n"
         f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
     )
+    admin_text += "• `/uyeler` - Bot veritabanındaki tüm kullanıcıları listeler\n"
     await update.message.reply_text(admin_text, parse_mode="Markdown", message_thread_id=thread_id)
+
+async def members_list_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT user_id, username, first_name, last_name, balance
+        FROM users
+        ORDER BY user_id ASC
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("Kayitli kullanici yok.", message_thread_id=thread_id)
+        return
+
+    header = f"👥 **KAYITLI ÜYELER** ({len(rows)} kişi)\n\n"
+    messages = []
+    current = header
+
+    for index, row in enumerate(rows, start=1):
+        user_id, username, first_name, last_name, balance = row
+        display_name = get_user_display_name(user_id, username, first_name, last_name)
+        line = (
+            f"{index}. {escape_markdown(display_name)} | "
+            f"`{user_id}` | {format_money(balance or 0)} Çip\n"
+        )
+        if len(current) + len(line) > 3500:
+            messages.append(current)
+            current = line
+        else:
+            current += line
+
+    if current:
+        messages.append(current)
+
+    for part_index, text in enumerate(messages, start=1):
+        suffix = f"\nSayfa {part_index}/{len(messages)}" if len(messages) > 1 else ""
+        await update.message.reply_text(
+            text + suffix,
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
 
 
 # --- 5. GÜVENLİ ADMİN KOMUTLARI ---
@@ -4795,6 +4845,7 @@ async def main():
     application.add_handler(CommandHandler("panel1", admin_pvp_panel))
     application.add_handler(CommandHandler("mod", house_mode_admin))
     application.add_handler(CommandHandler("bilgi", user_info_admin))
+    application.add_handler(CommandHandler("uyeler", members_list_admin))
     application.add_handler(CommandHandler("panelsifirla", reset_panel_admin))
     application.add_handler(CommandHandler("bakim", maintenance_admin))
     application.add_handler(CommandHandler("duyuru", broadcast_admin))
