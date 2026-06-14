@@ -322,9 +322,33 @@ def init_db():
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS game_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            game_type TEXT NOT NULL,
+            wagered_amount INTEGER DEFAULT 0,
+            paid_amount INTEGER DEFAULT 0,
+            is_win INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admin_logs (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            target_id INTEGER,
+            amount INTEGER,
+            note TEXT,
+            created_at INTEGER NOT NULL
         )
     """)
 
@@ -503,7 +527,7 @@ def update_balance(user_id, amount):
     conn.close()
     return new_balance
 
-def update_admin_balance_totals(user_id, added=0, removed=0):
+def update_admin_balance_totals(user_id, added=0, removed=0, admin_id=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)", (user_id,))
@@ -513,6 +537,23 @@ def update_admin_balance_totals(user_id, added=0, removed=0):
     )
     conn.commit()
     conn.close()
+
+def log_admin_action(admin_id, action, target_id=None, amount=None, note=None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO admin_logs (admin_id, action, target_id, amount, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (admin_id, action, target_id, amount, note, int(time.time()))
+    )
+    conn.commit()
+    conn.close()
+    if admin_id is not None and added:
+        log_admin_action(admin_id, "balance_add", target_id=user_id, amount=added)
+    if admin_id is not None and removed:
+        log_admin_action(admin_id, "balance_remove", target_id=user_id, amount=removed)
 
 def update_game_stats(game_type, wagered_amount, paid_amount, is_win, user_id=None):
     conn = sqlite3.connect(DB_NAME)
@@ -540,6 +581,14 @@ def update_game_stats(game_type, wagered_amount, paid_amount, is_win, user_id=No
                 total_paid = total_paid + ?
             WHERE user_id = ? AND game_type = ?
         """, (win_int, wagered_amount, paid_amount, user_id, game_type))
+
+    cursor.execute(
+        """
+        INSERT INTO game_events (user_id, game_type, wagered_amount, paid_amount, is_win, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, game_type, wagered_amount, paid_amount, win_int, int(time.time()))
+    )
     conn.commit()
     conn.close()
 
@@ -3540,6 +3589,207 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(leaderboard, parse_mode="Markdown", message_thread_id=thread_id)
 
+def get_profile_rows(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT user_id, username, first_name, last_name, balance, total_added, total_removed FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+    user_row = cursor.fetchone()
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(SUM(total_games), 0),
+            COALESCE(SUM(winning_games), 0),
+            COALESCE(SUM(total_wagered), 0),
+            COALESCE(SUM(total_paid), 0)
+        FROM user_game_stats
+        WHERE user_id = ?
+        """,
+        (user_id,)
+    )
+    summary_row = cursor.fetchone()
+    cursor.execute(
+        """
+        SELECT game_type, total_games, winning_games, total_wagered, total_paid
+        FROM user_game_stats
+        WHERE user_id = ? AND total_games > 0
+        ORDER BY total_games DESC
+        LIMIT 5
+        """,
+        (user_id,)
+    )
+    detail_rows = cursor.fetchall()
+    conn.close()
+    return user_row, summary_row, detail_rows
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+    target_id = get_info_target(update, context) or update.effective_user.id
+    user_row, summary_row, detail_rows = get_profile_rows(target_id)
+
+    if user_row is None:
+        await update.message.reply_text("Profil bulunamadı.", message_thread_id=thread_id)
+        return
+
+    user_id, username, first_name, last_name, balance, total_added, total_removed = user_row
+    total_games, total_wins, total_wagered, total_paid = summary_row
+    total_losses = total_games - total_wins
+    win_rate = (total_wins / total_games * 100) if total_games else 0
+    net = total_paid - total_wagered
+    display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
+
+    detail_lines = []
+    for game_type, games, wins, wagered, paid in detail_rows:
+        detail_win_rate = (wins / games * 100) if games else 0
+        detail_lines.append(
+            f"• `{game_type}`: {games} oyun | Win %{detail_win_rate:.1f} | Net **{format_money(paid - wagered)}**"
+        )
+
+    text = (
+        f"👤 **PROFİL**\n\n"
+        f"Kullanıcı: {display_name}\n"
+        f"ID: `{user_id}`\n"
+        f"Bakiye: **{format_money(balance)}** Çip\n\n"
+        f"🎮 **Oyun Özeti**\n"
+        f"Toplam Oyun: **{total_games}**\n"
+        f"Kazandı/Kaybetti: **{total_wins}/{total_losses}**\n"
+        f"Kazanma Oranı: **%{win_rate:.1f}**\n"
+        f"Toplam Bahis: **{format_money(total_wagered)}**\n"
+        f"Toplam Ödeme: **{format_money(total_paid)}**\n"
+        f"Net: **{format_money(net)}**\n\n"
+        f"💳 Admin Eklenen/Silinen: **{format_money(total_added or 0)} / {format_money(total_removed or 0)}**\n\n"
+        f"**En Çok Oynananlar**\n"
+        f"{chr(10).join(detail_lines) if detail_lines else 'Henüz oyun kaydı yok.'}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", message_thread_id=thread_id)
+
+def get_user_ranking(order_by, limit=10):
+    allowed_order = {
+        "active": "total_games DESC",
+        "profit": "net DESC",
+        "loss": "net ASC",
+    }
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            u.user_id, u.username, u.first_name, u.last_name,
+            COALESCE(SUM(s.total_games), 0) AS total_games,
+            COALESCE(SUM(s.winning_games), 0) AS total_wins,
+            COALESCE(SUM(s.total_wagered), 0) AS total_wagered,
+            COALESCE(SUM(s.total_paid), 0) AS total_paid,
+            COALESCE(SUM(s.total_paid), 0) - COALESCE(SUM(s.total_wagered), 0) AS net
+        FROM users u
+        LEFT JOIN user_game_stats s ON s.user_id = u.user_id
+        GROUP BY u.user_id
+        HAVING total_games > 0
+        ORDER BY {allowed_order[order_by]}
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+async def ranking_command(update: Update, context: ContextTypes.DEFAULT_TYPE, order_by, title):
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+    rows = get_user_ranking(order_by)
+    lines = []
+    for index, row in enumerate(rows, start=1):
+        user_id, username, first_name, last_name, total_games, total_wins, total_wagered, total_paid, net = row
+        display_name = escape_markdown(get_user_display_name(user_id, username, first_name, last_name))
+        win_rate = (total_wins / total_games * 100) if total_games else 0
+        lines.append(
+            f"{index}. {display_name} (`{user_id}`) | {total_games} oyun | Win %{win_rate:.1f} | Net **{format_money(net)}**"
+        )
+
+    await update.message.reply_text(
+        f"{title}\n\n{chr(10).join(lines) if lines else 'Henüz kayıt yok.'}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def most_active_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ranking_command(update, context, "active", "🎮 **EN AKTİF OYUNCULAR**")
+
+async def top_winners_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ranking_command(update, context, "profit", "🏆 **EN ÇOK KAZANANLAR**")
+
+async def top_losers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ranking_command(update, context, "loss", "📉 **EN ÇOK KAYBEDENLER**")
+
+def get_period_report(seconds):
+    since = int(time.time()) - seconds
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(is_win), 0),
+            COALESCE(SUM(wagered_amount), 0),
+            COALESCE(SUM(paid_amount), 0)
+        FROM game_events
+        WHERE created_at >= ?
+        """,
+        (since,)
+    )
+    summary = cursor.fetchone()
+    cursor.execute(
+        """
+        SELECT game_type, COUNT(*), COALESCE(SUM(is_win), 0), COALESCE(SUM(wagered_amount), 0), COALESCE(SUM(paid_amount), 0)
+        FROM game_events
+        WHERE created_at >= ?
+        GROUP BY game_type
+        ORDER BY COUNT(*) DESC
+        LIMIT 10
+        """,
+        (since,)
+    )
+    details = cursor.fetchall()
+    conn.close()
+    return summary, details
+
+async def period_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE, seconds, title):
+    remember_user(update.effective_user)
+    thread_id = update.message.message_thread_id if update.message else None
+    summary, details = get_period_report(seconds)
+    total_games, total_wins, total_wagered, total_paid = summary
+    total_losses = total_games - total_wins
+    win_rate = (total_wins / total_games * 100) if total_games else 0
+    net = total_wagered - total_paid
+
+    detail_lines = []
+    for game_type, games, wins, wagered, paid in details:
+        game_win_rate = (wins / games * 100) if games else 0
+        detail_lines.append(
+            f"• `{game_type}`: {games} oyun | Win %{game_win_rate:.1f} | Kasa **{format_money(wagered - paid)}**"
+        )
+
+    text = (
+        f"{title}\n\n"
+        f"Toplam Oyun: **{total_games}**\n"
+        f"Kazandı/Kaybetti: **{total_wins}/{total_losses}**\n"
+        f"Kazanma Oranı: **%{win_rate:.1f}**\n"
+        f"Toplam Bahis: **{format_money(total_wagered)}**\n"
+        f"Toplam Ödeme: **{format_money(total_paid)}**\n"
+        f"Kasa Net: **{format_money(net)}**\n\n"
+        f"{chr(10).join(detail_lines) if detail_lines else 'Bu dönemde oyun kaydı yok.'}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", message_thread_id=thread_id)
+
+async def daily_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await period_report_command(update, context, 24 * 60 * 60, "📅 **GÜNLÜK RAPOR**")
+
+async def weekly_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await period_report_command(update, context, 7 * 24 * 60 * 60, "🗓 **HAFTALIK RAPOR**")
+
 async def bakiye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update.effective_user)
     balance = get_balance(update.effective_user.id)
@@ -3706,6 +3956,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/transfer [ID/@kullanıcı] [Miktar]` - Başka kullanıcıya çip gönderir\n"
     )
     
+    help_text += (
+        f"• `/profil` - Profil ve oyun özetini gösterir\n"
+        f"• `/gunluk` - Son 24 saat raporu\n"
+        f"• `/haftalik` - Son 7 gün raporu\n"
+        f"• `/enaktif`, `/encokkazanan`, `/enkaybeden` - Oyuncu sıralamaları\n"
+    )
+
     if is_admin:
         help_text += (
             f"\n⚡ Admin komutları için `/admin`\n"
@@ -3748,6 +4005,7 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     admin_text += "• `/adminekle [ID/Yanıt]` - Yeni admin ekler (sadece ana admin)\n"
     admin_text += "• `/adminsil [ID/Yanıt]` - Admin siler (sadece ana admin)\n"
     admin_text += "• `/adminler` - Admin listesini gösterir (sadece ana admin)\n"
+    admin_text += "• `/adminlog [Limit]` - Son admin işlemlerini gösterir\n"
     await update.message.reply_text(admin_text, parse_mode="Markdown", message_thread_id=thread_id)
 
 async def members_list_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4009,6 +4267,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     save_admin_ids([*ADMIN_IDS, target_id])
+    log_admin_action(update.effective_user.id, "admin_add", target_id=target_id)
     await update.message.reply_text(
         f"`{target_id}` admin yapıldı.",
         parse_mode="Markdown",
@@ -4045,6 +4304,7 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     save_admin_ids([admin_id for admin_id in ADMIN_IDS if admin_id != target_id])
+    log_admin_action(update.effective_user.id, "admin_remove", target_id=target_id)
     await update.message.reply_text(
         f"`{target_id}` admin listesinden çıkarıldı.",
         parse_mode="Markdown",
@@ -4059,6 +4319,47 @@ async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     admin_lines = "\n".join(f"• `{admin_id}`" for admin_id in ADMIN_IDS)
     await update.message.reply_text(
         f"Adminler:\n{admin_lines}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def admin_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    limit = 15
+    if context.args:
+        try:
+            limit = max(1, min(50, int(context.args[0])))
+        except ValueError:
+            pass
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT log_id, admin_id, action, target_id, amount, note, created_at
+        FROM admin_logs
+        ORDER BY log_id DESC
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    lines = []
+    for log_id, admin_id, action, target_id, amount, note, created_at in rows:
+        target_text = f" -> `{target_id}`" if target_id is not None else ""
+        amount_text = f" | {format_money(amount)}" if amount is not None else ""
+        note_text = f" | {escape_markdown(note)}" if note else ""
+        lines.append(
+            f"`#{log_id}` {format_timestamp(created_at)} | `{admin_id}` | **{action}**{target_text}{amount_text}{note_text}"
+        )
+
+    await update.message.reply_text(
+        f"🧾 **ADMIN LOG**\n\n{chr(10).join(lines) if lines else 'Henüz admin işlemi yok.'}",
         parse_mode="Markdown",
         message_thread_id=thread_id
     )
@@ -4160,6 +4461,7 @@ def decide_credit_request(request_id, status, admin_id):
     )
     conn.commit()
     conn.close()
+    log_admin_action(admin_id, f"credit_{status}", target_id=user_id, amount=amount, note=f"request #{request_id}")
     return user_id, amount
 
 def get_credit_summary(user_id):
@@ -4335,6 +4637,9 @@ def set_credit_paid_status(request_id, paid, admin_id):
     )
     conn.commit()
     conn.close()
+    user_id, amount = row
+    action = "credit_paid" if paid else "credit_unpaid"
+    log_admin_action(admin_id, action, target_id=user_id, amount=amount, note=f"request #{request_id}")
     return row
 
 def delete_credit_request_record(request_id, admin_id):
@@ -4363,6 +4668,8 @@ def delete_credit_request_record(request_id, admin_id):
     )
     conn.commit()
     conn.close()
+    user_id, amount, status = row
+    log_admin_action(admin_id, "credit_delete", target_id=user_id, amount=amount, note=f"request #{request_id} ({status})")
     return row
 
 async def credit_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4425,7 +4732,7 @@ async def approve_credit_admin(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     update_balance(target_id, amount)
-    update_admin_balance_totals(target_id, added=amount)
+    update_admin_balance_totals(target_id, added=amount, admin_id=update.effective_user.id)
     await update.message.reply_text(
         f"✅ Kredi onaylandı.\n"
         f"Talep: `#{request_id}`\n"
@@ -4615,7 +4922,7 @@ async def add_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     update_balance(target_id, amount)
-    update_admin_balance_totals(target_id, added=amount)
+    update_admin_balance_totals(target_id, added=amount, admin_id=update.effective_user.id)
     await update.message.reply_text(f"✅ `{target_id}` ID'li kullanıcıya **{format_money(amount)}** çip eklendi.", parse_mode="Markdown", message_thread_id=thread_id)
 
 async def remove_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4627,7 +4934,7 @@ async def remove_balance_admin(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     update_balance(target_id, -amount)
-    update_admin_balance_totals(target_id, removed=amount)
+    update_admin_balance_totals(target_id, removed=amount, admin_id=update.effective_user.id)
     await update.message.reply_text(f"📉 `{target_id}` ID'li kullanıcıdan **{format_money(amount)}** çip silindi.", parse_mode="Markdown", message_thread_id=thread_id)
 
 async def send_admin_panel(update: Update, game_types, panel_title):
@@ -4964,6 +5271,12 @@ async def main():
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^/çek(@\w+)?(?:\s|$)"), pvp_21_hit_command))
     application.add_handler(MessageHandler(filters.Regex(r"(?i)^/?panel(?:@\w+)?\s*1\s*$|^/?panel1(?:@\w+)?\s*$"), admin_pvp_panel))
     application.add_handler(CommandHandler("top10", top_players))
+    application.add_handler(CommandHandler("profil", profile_command))
+    application.add_handler(CommandHandler("enaktif", most_active_command))
+    application.add_handler(CommandHandler("encokkazanan", top_winners_command))
+    application.add_handler(CommandHandler("enkaybeden", top_losers_command))
+    application.add_handler(CommandHandler("gunluk", daily_report_command))
+    application.add_handler(CommandHandler("haftalik", weekly_report_command))
     application.add_handler(CommandHandler("bakiye", bakiye))
     application.add_handler(CommandHandler("id", id_command))
     application.add_handler(CommandHandler("kreditalep", credit_request_command))
@@ -4989,6 +5302,7 @@ async def main():
     application.add_handler(CommandHandler("adminekle", add_admin_command))
     application.add_handler(CommandHandler("adminsil", remove_admin_command))
     application.add_handler(CommandHandler("adminler", list_admins_command))
+    application.add_handler(CommandHandler("adminlog", admin_log_command))
     application.add_handler(CommandHandler("panelsifirla", reset_panel_admin))
     application.add_handler(CommandHandler("bakim", maintenance_admin))
     application.add_handler(CommandHandler("duyuru", broadcast_admin))
@@ -4998,6 +5312,7 @@ async def main():
     
     await application.initialize()
     await application.start()
+    await send_all_admin_private_notices(application, f"✅ Bot aktif.\nVeritabanı: `{DB_NAME}`", parse_mode="Markdown")
     application.create_task(run_aviator_scheduler(application))
     await application.updater.start_polling(drop_pending_updates=True)
     
