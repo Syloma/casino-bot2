@@ -40,9 +40,28 @@ def resolve_db_path():
 
 DB_NAME = str(resolve_db_path())
 
+def resolve_admin_ids():
+    raw_admin_ids = os.getenv("CASINO_ADMIN_IDS")
+    if not raw_admin_ids:
+        return [1282335065, 1553213587, 7244274042]
+
+    admin_ids = []
+    for raw_id in raw_admin_ids.split(","):
+        raw_id = raw_id.strip()
+        if raw_id:
+            try:
+                admin_ids.append(int(raw_id))
+            except ValueError:
+                continue
+    return admin_ids
+
 # 🛑 YÖNETİCİ ID'LERİ VE BOT TOKENİ
-ADMIN_IDS = [1282335065, 1553213587, 7244274042] 
-TOKEN = "8900945222:AAF794z_zDLCs-RTkd9fTrKgh72Qp-nTnrU"
+SUPER_ADMIN_ID = 1282335065
+ADMIN_IDS_SETTING = "admin_ids"
+ADMIN_IDS = resolve_admin_ids()
+TOKEN = os.getenv("CASINO_BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("CASINO_BOT_TOKEN ortam değişkeni ayarlanmalı.")
 
 # --- 2. PARA BİRİMİ DÖNÜŞTÜRÜCÜLERİ ---
 def parse_money(amount_str):
@@ -544,6 +563,33 @@ def set_setting(key, value):
         )
     conn.commit()
     conn.close()
+
+def parse_admin_ids(value):
+    admin_ids = {SUPER_ADMIN_ID}
+    if not value:
+        return sorted(admin_ids)
+
+    for raw_id in str(value).split(","):
+        raw_id = raw_id.strip()
+        if raw_id:
+            try:
+                admin_ids.add(int(raw_id))
+            except ValueError:
+                continue
+    return sorted(admin_ids)
+
+def save_admin_ids(admin_ids):
+    global ADMIN_IDS
+    ADMIN_IDS = sorted({SUPER_ADMIN_ID, *[int(admin_id) for admin_id in admin_ids]})
+    set_setting(ADMIN_IDS_SETTING, ",".join(str(admin_id) for admin_id in ADMIN_IDS))
+
+def load_admin_ids():
+    stored_admin_ids = get_setting(ADMIN_IDS_SETTING)
+    if stored_admin_ids is None:
+        save_admin_ids(ADMIN_IDS)
+        return
+
+    save_admin_ids(parse_admin_ids(stored_admin_ids))
 
 USER_FORCED_WIN_RATE_PREFIX = "forced_win_rate_user_"
 
@@ -3699,6 +3745,9 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"• `/duyuru [Mesaj]` - Herkese mesaj atar\n"
     )
     admin_text += "• `/uyeler` - Bot veritabanındaki tüm kullanıcıları listeler\n"
+    admin_text += "• `/adminekle [ID/Yanıt]` - Yeni admin ekler (sadece ana admin)\n"
+    admin_text += "• `/adminsil [ID/Yanıt]` - Admin siler (sadece ana admin)\n"
+    admin_text += "• `/adminler` - Admin listesini gösterir (sadece ana admin)\n"
     await update.message.reply_text(admin_text, parse_mode="Markdown", message_thread_id=thread_id)
 
 async def members_list_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3923,6 +3972,96 @@ def get_info_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return int(target_arg)
     except ValueError:
         return None
+
+def get_admin_target_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.reply_to_message and update.message.reply_to_message.from_user:
+        remember_user(update.message.reply_to_message.from_user)
+        return update.message.reply_to_message.from_user.id
+
+    if not context.args:
+        return None
+
+    try:
+        return int(context.args[0])
+    except ValueError:
+        return None
+
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != SUPER_ADMIN_ID:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target_id = get_admin_target_id(update, context)
+    if target_id is None:
+        await update.message.reply_text(
+            "Kullanım: `/adminekle [ID]` veya kullanıcı mesajına yanıt verip `/adminekle`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if target_id in ADMIN_IDS:
+        await update.message.reply_text(
+            f"`{target_id}` zaten admin.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    save_admin_ids([*ADMIN_IDS, target_id])
+    await update.message.reply_text(
+        f"`{target_id}` admin yapıldı.",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != SUPER_ADMIN_ID:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    target_id = get_admin_target_id(update, context)
+    if target_id is None:
+        await update.message.reply_text(
+            "Kullanım: `/adminsil [ID]` veya kullanıcı mesajına yanıt verip `/adminsil`",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    if target_id == SUPER_ADMIN_ID:
+        await update.message.reply_text(
+            "Ana admin silinemez.",
+            message_thread_id=thread_id
+        )
+        return
+
+    if target_id not in ADMIN_IDS:
+        await update.message.reply_text(
+            f"`{target_id}` admin listesinde yok.",
+            parse_mode="Markdown",
+            message_thread_id=thread_id
+        )
+        return
+
+    save_admin_ids([admin_id for admin_id in ADMIN_IDS if admin_id != target_id])
+    await update.message.reply_text(
+        f"`{target_id}` admin listesinden çıkarıldı.",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
+
+async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != SUPER_ADMIN_ID:
+        return
+
+    thread_id = update.message.message_thread_id if update.message else None
+    admin_lines = "\n".join(f"• `{admin_id}`" for admin_id in ADMIN_IDS)
+    await update.message.reply_text(
+        f"Adminler:\n{admin_lines}",
+        parse_mode="Markdown",
+        message_thread_id=thread_id
+    )
 
 def get_user_display_name(user_id, username, first_name, last_name):
     if username:
@@ -4761,6 +4900,7 @@ async def broadcast_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- 6. ANA ÇALIŞTIRICI ---
 async def main():
     init_db()
+    load_admin_ids()
     application = (
         Application.builder()
         .token(TOKEN)
@@ -4846,6 +4986,9 @@ async def main():
     application.add_handler(CommandHandler("mod", house_mode_admin))
     application.add_handler(CommandHandler("bilgi", user_info_admin))
     application.add_handler(CommandHandler("uyeler", members_list_admin))
+    application.add_handler(CommandHandler("adminekle", add_admin_command))
+    application.add_handler(CommandHandler("adminsil", remove_admin_command))
+    application.add_handler(CommandHandler("adminler", list_admins_command))
     application.add_handler(CommandHandler("panelsifirla", reset_panel_admin))
     application.add_handler(CommandHandler("bakim", maintenance_admin))
     application.add_handler(CommandHandler("duyuru", broadcast_admin))
